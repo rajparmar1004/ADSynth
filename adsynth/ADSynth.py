@@ -22,6 +22,18 @@ from adsynth.default_ad_system.default_groups import create_adminstrator_members
 from adsynth.default_ad_system.default_ous import create_domain_controllers_ou
 from adsynth.default_ad_system.default_users import generate_administrator, generate_default_account, generate_guest_user, generate_krbtgt_user, link_default_users_to_domain
 from adsynth.default_ad_system.domains import create_domain
+from adsynth.azure_ad_system.az_default_tenants import az_create_tenant
+from adsynth.azure_ad_system.az_default_subscriptions import az_create_subscriptions
+from adsynth.azure_ad_system.az_default_roles import az_create_roles
+from adsynth.azure_ad_system.az_default_users import az_create_users
+from adsynth.azure_ad_system.az_default_groups import az_create_groups
+from adsynth.azure_ad_system.az_default_service_principals import az_create_service_principals
+from adsynth.azure_ad_system.az_default_applications import az_create_applications
+from adsynth.azure_ad_system.az_default_relationships import az_assign_group_memberships, az_assign_roles
+from adsynth.azure_ad_system.az_default_permissions import az_create_permissions
+from adsynth.azure_ad_system.az_default_management_groups import az_create_management_groups
+from adsynth.azure_ad_system.az_default_key_vaults import az_create_key_vaults
+from adsynth.azure_ad_system.az_default_vms import az_create_vms
 from adsynth.entities.acls import cs
 from adsynth.helpers.about import print_adsynth_software_information
 from adsynth.helpers.getters import get_num_tiers, get_single_int_param_value
@@ -114,7 +126,7 @@ class Messages():
                                                                                                                                                                                               
         """
         )
-        print("Synthesizing realisitc Active Directory attack graphs\n")
+        print("Synthesizing realistic Active Directory attack graphs\n")
         print("==================================================================")
 
     # Ref: DBCreator
@@ -220,6 +232,9 @@ class MainMenu(cmd.Cmd):
  
     def help_generate(self):
         print("Generate an Active Directory attack graph based on the given parameters")
+
+    def help_generate_azure(self):
+        print("Generate an Azure Active Directory attack graph based on the given parameters")
 
 
     def help_setparams(self):
@@ -343,15 +358,22 @@ class MainMenu(cmd.Cmd):
         print("Setting constraints")
 
         constraints = [
-                "CREATE CONSTRAINT FOR (n:Base) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:Domain) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:Computer) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:User) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:OU) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:GPO) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:Compromised) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:Group) REQUIRE n.neo4jImportId IS UNIQUE;",
-                "CREATE CONSTRAINT FOR (n:Container) REQUIRE n.neo4jImportId IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Base) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Domain) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Computer) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:User) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:OU) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:GPO) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Compromised) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Group) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Container) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZTenant) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZSubscription) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZRole) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZUser) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZGroup) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZServicePrincipal) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZApp) REQUIRE n.id IS UNIQUE;"
         ]
 
         for constraint in constraints:
@@ -494,6 +516,12 @@ class MainMenu(cmd.Cmd):
         self.old_domain = self.domain
 
 
+    def do_generate_azure(self, args):
+
+        print("Generating Azure Active Directory graph")
+        self.generate_data_azure()
+
+
     def generate_data(self):
         start_ = timer()
         seed_number = get_single_int_param_value("seed", self.parameters)
@@ -506,7 +534,7 @@ class MainMenu(cmd.Cmd):
         
         domain_dn = get_domain_dn(self.domain)
 
-        nTiers = get_num_tiers(self.parameters)
+        nTiers = get_num_tiers(self.parameters) 
 
         # RIDs below 1000 are used for default principals.
         # RIDs of other objects should start from 1000.
@@ -807,6 +835,112 @@ class MainMenu(cmd.Cmd):
         # session.close()
 
         print("Database Generation Finished!")
+
+
+    def generate_data_azure(self): 
+        start_ = timer()
+
+        seed_number = get_single_int_param_value("seed", self.parameters)
+        if seed_number > 0:
+            random.seed(seed_number)
+
+        # Reset database
+        reset_DB()
+
+        # Generate tenant
+        print(f"Initiating Azure AD tenant - {self.domain}")
+        tenant_id = az_create_tenant(self.domain)  # Reuse domain as tenant name
+
+        # ===============================================
+        # Create tenant's Azure subscription instance(s)
+        print("Creating Azure subscriptions")
+        subscriptions = az_create_subscriptions(self.domain, tenant_id, self.parameters)
+
+        # ===============================================
+        # Create the roles
+        print("Creating roles")
+        roles = az_create_roles(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create users, including default system users
+        print("Creating users")
+        users = az_create_users(self.domain, tenant_id, roles, self.first_names, self.last_names, self.parameters)
+
+        # ===============================================
+        # Create groups
+        print("Creating groups")
+        groups = az_create_groups(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create management groups
+        print("Creating management groups")
+        management_groups = az_create_management_groups(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Create service principals
+        print("Creating service principals")
+        service_principals = az_create_service_principals(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create applications
+        print("Creating applications")
+        applications = az_create_applications(tenant_id, service_principals, self.parameters)
+
+        # ===============================================
+        # Create key vaults
+        print("Creating key vaults")
+        key_vaults = az_create_key_vaults(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Create VMs
+        print("Creating VMs")
+        vms = az_create_vms(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Assign group memberships
+        print("Assigning group memberships")
+        az_assign_group_memberships(groups, users, self.parameters)
+
+        # ===============================================
+        # Assign roles
+        print("Assigning roles")
+        az_assign_roles(users, groups, service_principals, roles, tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Generate misconfigured permissions (permission-related edge types)
+        print("Generating misconfigured permissions")
+        az_create_permissions(users, groups, service_principals, key_vaults, vms, self.parameters)
+
+        # ===============================================
+        # Export to JSON
+        print("Exporting to JSON file")
+        current_datetime = datetime.now()
+        filename = current_datetime.strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
+        with open(f"generated_datasets/{filename}.json", "w") as f:
+            for obj in NODES:
+                obj["type"] = "node"
+                json_str = json.dumps(obj, separators=(',', ':'))
+                f.write(json_str + '\n')
+        with open(f"generated_datasets/{filename}.json", 'a') as f:
+            for obj in EDGES:
+                json_str = json.dumps(obj, separators=(',', ':'))
+                f.write(json_str + '\n')
+        self.dbname = filename
+
+        # ===============================================
+        # Print statistics
+        print("Num of nodes =", len(NODES))
+        print("Num of edges =", len(EDGES))
+        try:
+            print("Graph density =", round(len(EDGES) / (len(NODES) * (len(NODES) - 1)), 5))
+        except:
+            pass
+        for node_type in NODE_GROUPS:
+            print(f"Number of {node_type} =", len(NODE_GROUPS[node_type]))
+
+        end_ = timer()
+        print("Execution time =", end_ - start_)
+        print("Azure AD Database Generation Finished!")
 
 
     def write_json(self, session):
