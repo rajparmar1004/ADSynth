@@ -41,6 +41,7 @@ from adsynth.DATABASE import *
 import json
 from timeit import default_timer as timer
 from datetime import datetime
+from adsynth.azure_ai.smart_params import SmartParameterGenerator
 
 def reset_DB():
     NODES.clear()
@@ -828,3 +829,63 @@ class MainMenu(cmd.Cmd):
         query = "CALL apoc.export.json.all('" + json_path + "',{useTypes:true})"
         session.run(query)
         print("Graph exported in", json_path)
+        
+        
+    def help_smartparams(self):
+        print("Generate parameters from natural language description")
+
+    def do_smartparams(self, args):
+        """Generate parameters using Azure AI from natural language"""
+    
+        if not args.strip():
+            prompt = input("Describe your organization (e.g., 'Medium healthcare org with high security'): ")
+        else:
+            prompt = args
+    
+        print(f"Generating parameters for: {prompt}")
+    
+        try:
+            generator = SmartParameterGenerator()
+            ai_params = generator.generate_parameters(prompt)
+        
+            if ai_params:
+                print("\nAI GENERATED:")
+                print(json.dumps(ai_params, indent=2))
+                # Merge with default configuration to ensure completeness
+                from adsynth.adsynth_templates.default_config import DEFAULT_CONFIGURATIONS
+                merged_params = DEFAULT_CONFIGURATIONS.copy()
+            
+                # Recursively update with AI-generated parameters
+                def deep_update(base, update):
+                    for key, value in update.items():
+                        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                            deep_update(base[key], value)
+                        else:
+                            base[key] = value
+                
+                deep_update(merged_params, ai_params)
+            
+                # Validate critical parameters
+                if merged_params.get("User", {}).get("nUsers", 0) > 0:
+                    self.parameters = merged_params
+                    self.parameters_json_path = "AI_GENERATED"
+                    print("\nParameters generated successfully!")
+                    print_all_parameters(self.parameters)
+                
+                    # Ask if user wants to save
+                    save = self.m.input_yesno("Save these parameters to file?", True)
+                    if save:
+                        filename = f"ai_generated_{prompt.replace(' ', '_')[:20]}.json"
+                        filepath = f"adsynth/experiment_params/{filename}"
+                        with open(filepath, 'w') as f:
+                            json.dump(merged_params, f, indent=4)
+                        print(f"Parameters saved to {filepath}")
+                else:
+                    print("Generated parameters invalid. Using defaults.")
+                
+            else:
+                print("Failed to generate parameters. Check Azure AI configuration.")
+            
+        except Exception as e:
+            print(f"Error: {e}")
+            print("Using default parameters instead.")
