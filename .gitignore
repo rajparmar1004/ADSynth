@@ -6,3 +6,5 @@ generated_datasets/
 generated_datasets/datasets/untitled folder/*.json
 adsynth/.env
 .env
+.env
+*.env
