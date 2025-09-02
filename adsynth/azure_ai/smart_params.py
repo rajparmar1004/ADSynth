@@ -34,115 +34,237 @@ class SmartParameterGenerator:
     def generate_parameters(self, user_prompt):
         
         system_prompt = f"""
-        You are an expert Active Directory security consultant. Generate ORIGINAL ADSynth parameters.
+        You are an expert Active Directory security consultant. Generate COMPLETE ADSynth parameters in the EXACT format used by the system.
 
-        CRITICAL RULE: Generate completely NEW values. Do NOT copy these example numbers:
-        90, 30, 35, 25, 10, 5, 15, 20, 40, 50, 4, 3, 1, 2
-
-        ORGANIZATION PATTERNS TO FOLLOW:
-
-        **Size Guidelines:**
-        - Small (< 1000): nUsers 200-900, fewer computers, higher session percentages
-        - Medium (1000-5000): nUsers 1000-5000, proportional computers  
-        - Large (5000+): nUsers 5000+, lower session percentages
-
-        **Security Level Guidelines:**
-        - High Security (healthcare, finance): 
-          * misconfig percentages: 1-8%
-          * Modern OS emphasis (Win10/Server2016: 60-80%)
-          * Low admin percentage: 5-12%
+        CRITICAL SIZE ACCURACY:
+        When user specifies employee/user count, match it EXACTLY:
+        - "200 employees" → nUsers: 200
+        - "1000 employees" → nUsers: 1000  
+        - "5000 employees" → nUsers: 5000
+        - "15000 employees" → nUsers: 15000
         
-        - Medium Security (corporate):
-          * misconfig percentages: 12-35%
-          * Mixed OS distributions
-          * Moderate admin percentage: 12-18%
+        Do NOT deviate from specified user counts. This is the most important requirement.
+
+        ORGANIZATION SIZE PATTERNS:
+        - Small (1k): 500-650 users, 150-300 computers
+        - Medium (5k): 1800-2000 users, 1600 computers  
+        - Large (10k): 3300 users, 3300 computers
+        - Enterprise (50k): 15000-16600 users, 16600-25000 computers
+        - Mega (100k): 33300+ users, 33300-35000 computers
+
+        **HEALTHCARE SPECIFIC ADJUSTMENTS:**
+        - Higher Windows 10 Enterprise: 60-80%
+        - Higher Server 2016: 60-80% 
+        - Better LAPS coverage: 25-40%
+        - Lower legacy OS percentages
+        - Very low misconfig percentages (0.02-0.1%)
         
-        - Low Security (startup, vulnerable):
-          * misconfig percentages: 40-85%
-          * More legacy OS
-          * Higher admin percentage: 18-28%
+        **SESSION PERCENTAGES BY SIZE:**
+        - Small (1k): [2, 2, 2] or [0.2, 0.2, 0.2]  
+        - Medium (5k): [0.9, 0.9, 0.9] or [1.1, 1.1, 1.1]
+        - Large (10k): [0.6, 0.6, 0.6] or [0.9, 0.9, 0.9]
+        - Enterprise (50k): [0.09, 0.09, 0.09] or [0.21, 0.21, 0.21]
+        - Mega (100k): [0.09, 0.09, 0.09] or [0.11, 0.11, 0.11]
+        
+        **RESOURCE THRESHOLDS BY SIZE:**
+        - Small (1k): [3, 8]
+        - Medium (5k): [80, 110] 
+        - Large (10k): [200, 210]
+        - Enterprise (50k): [500, 1100]
+        - Mega (100k): [1900, 2100]
 
-        **Industry Variations:**
-        - Healthcare: Latest OS, very low misconfig, compliance-focused
-        - Finance: Extreme security, newest systems only
-        - Government: Secure but mixed systems
-        - Startup: Higher misconfig, budget constraints
-        - Education: Moderate security, diverse systems
+        SECURITY LEVEL PATTERNS:
+        **SECURE Organizations:**
+        - misconfig_sessions: 0.02-4% (very low)
+        - misconfig_permissions: 0.03-4% (very low)
+        - misconfig_permissions_on_groups: 0%
+        - misconfig_nesting_groups: 0-20%
+        - Admin_Percentage: 10-30%
+        - Modern OS emphasis (Server 2016: 25-50%)
 
-        **Required JSON Structure:**
+        **VULNERABLE Organizations:**
+        - misconfig_sessions: 30-86% (very high)
+        - misconfig_permissions: 30-86% (very high) 
+        - misconfig_permissions_on_groups: 30-50%
+        - misconfig_nesting_groups: 10-50%
+        - Admin_Percentage: 10-20%
+        - More legacy systems
+
+        GENERATE THE COMPLETE JSON with ALL required sections. Use this EXACT structure:
+
         {{
             "Domain": {{
                 "functionalLevelProbability": {{
-                    "2008": [0-8],
-                    "2008 R2": [0-12], 
-                    "2012": [8-18],
-                    "2012 R2": [22-42],
-                    "2016": [38-68],
-                    "Unknown": [1-3]
+                    "2008": 4,
+                    "2008 R2": 5,
+                    "2012": 10,
+                    "2012 R2": 30,
+                    "2016": 50,
+                    "Unknown": 1
                 }}
             }},
             "Computer": {{
-                "nComputers": [calculate from users],
-                "enabled": [75-95],
-                "haslaps": [6-28],
-                "unconstraineddelegation": [6-18],
+                "nComputers": [calculate based on size],
+                "enabled": 80,
+                "haslaps": 10,
+                "unconstraineddelegation": 10,
                 "osProbability": {{
-                    "Windows XP Professional Service Pack 3": [0-12],
-                    "Windows 7 Professional Service Pack 1": [0-22],
-                    "Windows 7 Ultimate Service Pack 1": [0-18],
-                    "Windows 7 Enterprise Service Pack 1": [8-28],
-                    "Windows 10 Pro": [22-48],
-                    "Windows 10 Enterprise": [24-58]
+                    "Windows XP Professional Service Pack 3": 3,
+                    "Windows 7 Professional Service Pack 1": 7,
+                    "Windows 7 Ultimate Service Pack 1": 5,
+                    "Windows 7 Enterprise Service Pack 1": 15,
+                    "Windows 10 Pro": 30,
+                    "Windows 10 Enterprise": 40
                 }},
-                "privesc": [18-65],
-                "creddump": [22-68],
-                "exploitable": [18-68],
+                "privesc": 30,
+                "creddump": 40,
+                "exploitable": 40,
                 "computerProbability": {{
-                    "PAW": [12-28],
-                    "Server": [16-32],
-                    "Workstation": [42-72]
+                    "PAW": 20,
+                    "Server": 20,
+                    "Workstation": 60
                 }}
             }},
             "DC": {{
-                "enabled": [82-96],
-                "haslaps": [6-28],
+                "enabled": 90,
+                "haslaps": 10,
                 "osProbability": {{
-                    "Windows Server 2003 Enterprise Edition": [0-3],
-                    "Windows Server 2008 Standard": [0-3],
-                    "Windows Server 2008 Datacenter": [0-3],
-                    "Windows Server 2008 Enterprise": [0-3],
-                    "Windows Server 2008 R2 Standard": [1-6],
-                    "Windows Server 2008 R2 Datacenter": [2-8],
-                    "Windows Server 2008 R2 Enterprise": [2-8],
-                    "Windows Server 2012 Standard": [3-8],
-                    "Windows Server 2012 Datacenter": [3-8],
-                    "Windows Server 2012 R2 Standard": [8-18],
-                    "Windows Server 2012 R2 Datacenter": [8-18],
-                    "Windows Server 2016 Standard": [28-48],
-                    "Windows Server 2016 Datacenter": [18-38]
+                    "Windows Server 2003 Enterprise Edition": 1,
+                    "Windows Server 2008 Standard": 1,
+                    "Windows Server 2008 Datacenter": 1,
+                    "Windows Server 2008 Enterprise": 1,
+                    "Windows Server 2008 R2 Standard": 2,
+                    "Windows Server 2008 R2 Datacenter": 3,
+                    "Windows Server 2008 R2 Enterprise": 3,
+                    "Windows Server 2012 Standard": 4,
+                    "Windows Server 2012 Datacenter": 4,
+                    "Windows Server 2012 R2 Standard": 10,
+                    "Windows Server 2012 R2 Datacenter": 10,
+                    "Windows Server 2016 Standard": 35,
+                    "Windows Server 2016 Datacenter": 25
                 }}
             }},
             "User": {{
-                "nUsers": [based on org size],
-                "enabled": [92-98],
-                "dontreqpreauth": [3-12],
-                "hasspn": [6-18],
-                "passwordnotreqd": [2-12],
-                "pwdneverexpires": [42-68],
-                "sidhistory": [6-18],
-                "unconstraineddelegation": [16-28],
-                "savedcredentials": [32-52],
-                "Kerberoastable": [[2-6], [4-8]],
-                "sessionsPercentages": [adjust by size],
-                "priority_session_weight": [1],
-                "perc_special_roles": [6-18]
+                "nUsers": [calculate based on size],
+                "enabled": 95,
+                "dontreqpreauth": 5,
+                "hasspn": 10,
+                "passwordnotreqd": 5,
+                "pwdneverexpires": 50,
+                "sidhistory": 10,
+                "unconstraineddelegation": 20,
+                "savedcredentials": 40,
+                "Kerberoastable": [3, 5],
+                "sessionsPercentages": [adjust based on size - use format like [0.9, 0.9, 0.9] for 3 tiers],
+                "priority_session_weight": 1,
+                "perc_special_roles": 10
             }},
-            [Continue with all sections using ORIGINAL values in the given ranges]
+            "Group": {{
+                "nestingGroupProbability": 30,
+                "departmentProbability": {{
+                    "IT": 25,
+                    "R&D": 25,
+                    "BUSINESS": 25,
+                    "HR": 25
+                }},
+                "nResourcesThresholds": [adjust based on size],
+                "nLocalAdminsPerDepartment": [3, 5],
+                "nOUsPerLocalAdmins": [3, 5],
+                "nGroupsPerUsers": [3, 5]
+            }},
+            "GPO": {{
+                "nGPOs": 30,
+                "exploitable": 30
+            }},
+            "ACLs": {{
+                "ACLPrincipalsPercentage": 30,
+                "ACLsProbability": {{
+                    "GenericAll": 10,
+                    "GenericWrite": 15,
+                    "WriteOwner": 15,
+                    "WriteDacl": 15,
+                    "AddMember": 30,
+                    "ForceChangePassword": 15,
+                    "AllExtendedRights": 10
+                }}
+            }},
+            "perc_misconfig_sessions": {{
+                "Customized": [set based on security level],
+                "Low": [set based on security level],
+                "High": 5
+            }},
+            "perc_misconfig_permissions": {{
+                "Customized": [set based on security level],
+                "Low": [set based on security level],
+                "High": 5
+            }},
+            "perc_misconfig_permissions_on_groups": {{
+                "Customized": [set based on security level],
+                "Low": [set based on security level],
+                "High": 100
+            }},
+            "perc_misconfig_nesting_groups": {{
+                "Customized": [set based on security level],
+                "Low": [set based on security level],
+                "High": 20
+            }},
+            "misconfig_permissions_to_tier_0": {{
+                "allow": 1,
+                "limit": [1 for secure, higher for vulnerable]
+            }},
+            "misconfig_group": {{
+                "acl_ratio": 50,
+                "admin_ratio": 30,
+                "priority_paws_weight": 3
+            }},
+            "nTiers": 3,
+            "Tier_1_Servers": {{
+                "extraServers": []
+            }},
+            "Admin": {{
+                "service_account": 15,
+                "Admin_Percentage": [set based on security level]
+            }},
+            "nonACLs": {{
+                "nonACLsPercentage": 10,
+                "nonACLsProbability": {{
+                    "CanRDP": 25,
+                    "ExecuteDCOM": 25,
+                    "AllowedToDelegate": 25,
+                    "ReadLAPSPassword": 25
+                }}
+            }},
+            "nodeMisconfig": {{
+                "admin_regular": 0,
+                "user_comp": 0
+            }},
+            "nLocations": 5,
+            "convert_to_directed_graphs": 0,
+            "seed": 1,
+            "graph_name": "[generate appropriate name]"
         }}
 
-        Generate for: {user_prompt}
-        
-        Return ONLY the complete JSON with ORIGINAL values.
+        CRITICAL: For healthcare organizations, enhance security parameters:
+        1. Increase Windows 10 Enterprise to 60-80%
+        2. Increase Server 2016 Datacenter/Standard to 60-80% total
+        3. Increase haslaps to 25-40% 
+        4. Reduce legacy OS percentages significantly
+        5. Keep misconfig percentages very low (0.02-0.1%)
+
+        INSTRUCTIONS:
+        1. READ THE USER COUNT CAREFULLY - if they say "5000 employees", nUsers MUST be 5000
+        2. Analyze the user prompt to determine organization size and security level
+        3. Generate the COMPLETE JSON with ALL sections above
+        4. Set nUsers to EXACTLY match the specified employee/user count
+        5. Adjust nComputers based on size (typically 0.8-1.2 ratio to users)
+        4. Adjust sessionsPercentages based on size (smaller = higher percentages)
+        5. Adjust nResourcesThresholds based on size
+        6. Set misconfig percentages based on security level (secure = low, vulnerable = high)
+        7. Set Admin_Percentage appropriately
+        8. Generate appropriate graph_name
+        9. Return ONLY the complete JSON, no explanations
+
+        User request: {user_prompt}
         """
         
         try:
@@ -150,10 +272,10 @@ class SmartParameterGenerator:
                 model=self.deployment,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Generate unique ADSynth parameters for: {user_prompt}"}
+                    {"role": "user", "content": f"Generate complete ADSynth parameters for: {user_prompt}"}
                 ],
-                temperature=0.8,
-                max_tokens=3000
+                temperature=0.7,
+                max_tokens=4000
             )
             
             content = response.choices[0].message.content.strip()
@@ -169,9 +291,48 @@ class SmartParameterGenerator:
             json_str = content[start:end]
             generated_params = json.loads(json_str)
             
-            # Basic validation only
-            if (generated_params.get("User", {}).get("nUsers", 0) > 0 and 
-                generated_params.get("Computer", {}).get("nComputers", 0) > 0):
+            # Validate that all required sections are present
+            required_sections = [
+                "Domain", "Computer", "DC", "User", "Group", "GPO", "ACLs",
+                "perc_misconfig_sessions", "perc_misconfig_permissions", 
+                "perc_misconfig_permissions_on_groups", "perc_misconfig_nesting_groups",
+                "misconfig_permissions_to_tier_0", "misconfig_group", "nTiers",
+                "Tier_1_Servers", "Admin", "nonACLs", "nodeMisconfig", 
+                "nLocations", "convert_to_directed_graphs", "seed"
+            ]
+            
+            missing_sections = [section for section in required_sections if section not in generated_params]
+            
+            if missing_sections:
+                print(f"Missing required sections: {missing_sections}")
+                return None
+            
+            # Clean up any arrays that should be single values
+            def clean_misconfig_arrays(params):
+                misconfig_keys = [
+                    "perc_misconfig_sessions", "perc_misconfig_permissions",
+                    "perc_misconfig_permissions_on_groups", "perc_misconfig_nesting_groups"
+                ]
+                for key in misconfig_keys:
+                    if key in params:
+                        for subkey in ["Customized", "Low", "High"]:
+                            if subkey in params[key] and isinstance(params[key][subkey], list):
+                                params[key][subkey] = params[key][subkey][0] if params[key][subkey] else 0
+                return params
+            
+            generated_params = clean_misconfig_arrays(generated_params)
+            
+            # Basic validation of critical values
+            n_users = generated_params.get("User", {}).get("nUsers", 0)
+            n_computers = generated_params.get("Computer", {}).get("nComputers", 0)
+            
+            # Ensure values are integers, not lists
+            if isinstance(n_users, list):
+                n_users = n_users[0] if n_users else 0
+            if isinstance(n_computers, list):
+                n_computers = n_computers[0] if n_computers else 0
+                
+            if (n_users > 0 and n_computers > 0):
                 return generated_params
             else:
                 print("Generated parameters validation failed - missing critical values")
@@ -179,6 +340,7 @@ class SmartParameterGenerator:
             
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
+            print(f"Raw response: {content}")
             return None
         except Exception as e:
             print(f"Azure AI error: {e}")

@@ -22,6 +22,18 @@ from adsynth.default_ad_system.default_groups import create_adminstrator_members
 from adsynth.default_ad_system.default_ous import create_domain_controllers_ou
 from adsynth.default_ad_system.default_users import generate_administrator, generate_default_account, generate_guest_user, generate_krbtgt_user, link_default_users_to_domain
 from adsynth.default_ad_system.domains import create_domain
+from adsynth.azure_ad_system.az_default_tenants import az_create_tenant
+from adsynth.azure_ad_system.az_default_subscriptions import az_create_subscriptions
+from adsynth.azure_ad_system.az_default_roles import az_create_roles
+from adsynth.azure_ad_system.az_default_users import az_create_users
+from adsynth.azure_ad_system.az_default_groups import az_create_groups
+from adsynth.azure_ad_system.az_default_service_principals import az_create_service_principals
+from adsynth.azure_ad_system.az_default_applications import az_create_applications
+from adsynth.azure_ad_system.az_default_relationships import az_assign_group_memberships, az_assign_roles
+from adsynth.azure_ad_system.az_default_permissions import az_create_permissions
+from adsynth.azure_ad_system.az_default_management_groups import az_create_management_groups
+from adsynth.azure_ad_system.az_default_key_vaults import az_create_key_vaults
+from adsynth.azure_ad_system.az_default_vms import az_create_vms
 from adsynth.entities.acls import cs
 from adsynth.helpers.about import print_adsynth_software_information
 from adsynth.helpers.getters import get_num_tiers, get_single_int_param_value
@@ -38,66 +50,66 @@ from adsynth.utils.domains import get_domain_dn
 from adsynth.utils.parameters import print_all_parameters, get_int_param_value, get_perc_param_value
 from adsynth.adsynth_templates.default_config import DEFAULT_CONFIGURATIONS
 from adsynth.DATABASE import *
+from adsynth.azure_ai.smart_params import SmartParameterGenerator
 import json
 from timeit import default_timer as timer
 from datetime import datetime
-from adsynth.azure_ai.smart_params import SmartParameterGenerator
 
 def reset_DB():
-	NODES.clear()
-	EDGES.clear()
+    NODES.clear()
+    EDGES.clear()
 
-	for item in DATABASE_ID:
-		DATABASE_ID[item].clear()
+    for item in DATABASE_ID:
+        DATABASE_ID[item].clear()
 
-	dict_edges.clear()
+    dict_edges.clear()
 
-	for item in NODE_GROUPS:
-		NODE_GROUPS[item].clear()
+    for item in NODE_GROUPS:
+        NODE_GROUPS[item].clear()
 
-	GPLINK_OUS.clear()
+    GPLINK_OUS.clear()
 
-	GROUP_MEMBERS.clear()
+    GROUP_MEMBERS.clear()
 
-	SECURITY_GROUPS.clear()
+    SECURITY_GROUPS.clear()
 
-	LOCAL_ADMINS.clear()
+    LOCAL_ADMINS.clear()
 
-	ADMIN_USERS.clear()
+    ADMIN_USERS.clear()
 
-	ENABLED_USERS.clear() # processed names # Tiered
+    ENABLED_USERS.clear() # processed names # Tiered
 
-	DISABLED_USERS.clear() # processed names
+    DISABLED_USERS.clear() # processed names
 
-	PAW_TIERS.clear() # Tiered
+    PAW_TIERS.clear() # Tiered
 
-	S_TIERS.clear() # Tiered
+    S_TIERS.clear() # Tiered
 
-	WS_TIERS.clear() # Tiered
+    WS_TIERS.clear() # Tiered
 
-	COMPUTERS.clear() # All
+    COMPUTERS.clear() # All
 
-	ridcount.clear()
+    ridcount.clear()
 
-	KERBEROASTABLES.clear() # processed names
+    KERBEROASTABLES.clear() # processed names
 
 neo4j = None
 def safe_import_neo4j():
-	global neo4j
-	try:
-		import neo4j as neo4j_lib
-		neo4j = neo4j_lib
-		return neo4j
-	except ImportError:
-		print("The 'neo4j' module is not installed. Please install it using 'pip install -r requirements.txt'.")
-		return None
-	
+    global neo4j
+    try:
+        import neo4j as neo4j_lib
+        neo4j = neo4j_lib
+        return neo4j
+    except ImportError:
+        print("The 'neo4j' module is not installed. Please install it using 'pip install -r requirements.txt'.")
+        return None
+    
 class Messages():
-	def title(self):
-		print(
-		"""
-																	   ,----,            
-														   ,--.      ,/   .`|       ,--, 
+    def title(self):
+        print(
+        """
+                                                                       ,----,            
+                                                           ,--.      ,/   .`|       ,--, 
    ,---,           ,---,      .--.--.                    ,--.'|    ,`   .'  :     ,--.'| 
   '  .' \        .'  .' `\   /  /    '.      ,---,   ,--,:  : |  ;    ;     /  ,--,  | : 
  /  ;    '.    ,---.'     \ |  :  /`. /     /_ ./|,`--.'`|  ' :.'___,/    ,',---.'|  : ' 
@@ -110,823 +122,943 @@ class Messages():
 |  :  :        |   | '` ,/  '--'.     /   \  ;  ; |   | '`--'      ;   |.'  |   | '  ,/  
 |  | ,'        ;   :  .'      `--'---'     :  \  \\'   : |          '---'    ;   : ;--'   
 `--''          |   ,.'                      \  ' ;;   |.'                   |   ,/       
-			   '---'                         `--` '---'                     '---'        
-																						 
-																																															  
-		"""
-		)
-		print("Synthesizing realisitc Active Directory attack graphs\n")
-		print("==================================================================")
+               '---'                         `--` '---'                     '---'        
+                                                                                         
+                                                                                                                                                                                              
+        """
+        )
+        print("Synthesizing realistic Active Directory attack graphs\n")
+        print("==================================================================")
 
-	# Ref: DBCreator
-	def input_default(self, prompt, default):
-		return input("%s [%s] " % (prompt, default)) or default
-	
-	def input_default_password(self, prompt, default, hide_input=False):
-		if hide_input:
-			# Use getpass to securely input passwords
-			prompt_with_default = f"{prompt} [{default}] "
-			return getpass.getpass(prompt_with_default) or default
-		else:
-			# Regular input for other types of data
-			return input(f"{prompt} [{default}] ") or default
-	
-	def input_security_level(self, prompt, default):
-		user_input = input("%s [%s] " % (prompt, default)) or default
-		if not user_input:
-			return default
-		
-		try:
-			user_input = int(user_input)
-			if user_input in [1, 2, 3]:
-					return user_input
-		except:
-			pass
-		return default
+    # Ref: DBCreator
+    def input_default(self, prompt, default):
+        return input("%s [%s] " % (prompt, default)) or default
+    
+    def input_default_password(self, prompt, default, hide_input=False):
+        if hide_input:
+            # Use getpass to securely input passwords
+            prompt_with_default = f"{prompt} [{default}] "
+            return getpass.getpass(prompt_with_default) or default
+        else:
+            # Regular input for other types of data
+            return input(f"{prompt} [{default}] ") or default
+    
+    def input_security_level(self, prompt, default):
+        user_input = input("%s [%s] " % (prompt, default)) or default
+        if not user_input:
+            return default
+        
+        try:
+            user_input = int(user_input)
+            if user_input in [1, 2, 3]:
+                    return user_input
+        except:
+            pass
+        return default
 
-	# Ref: DBCreator
-	def input_yesno(self, prompt, default):
-		temp = input(prompt + " " + ("Y" if default else "y") + "/" + ("n" if default else "N") + " ")
-		if temp == "y" or temp == "Y":
-			return True
-		elif temp == "n" or temp == "N":
-			return False
-		return default
+    # Ref: DBCreator
+    def input_yesno(self, prompt, default):
+        temp = input(prompt + " " + ("Y" if default else "y") + "/" + ("n" if default else "N") + " ")
+        if temp == "y" or temp == "Y":
+            return True
+        elif temp == "n" or temp == "N":
+            return False
+        return default
 
 
 
 class MainMenu(cmd.Cmd):
-	# The main functions to generate realistic Active Directory attack graphs using metagraphs belong to ADSynth.
-	# In case of code re-use from previous work, LICENSING is provided at the top of a file
-	# In case of code modification or ideas related to fundamental concepts of Active Directory, clear references are mentioned at the top of such functions.
+    # The main functions to generate realistic Active Directory attack graphs using metagraphs belong to ADSynth.
+    # In case of code re-use from previous work, LICENSING is provided at the top of a file
+    # In case of code modification or ideas related to fundamental concepts of Active Directory, clear references are mentioned at the top of such functions.
 
-	def __init__(self):
-		self.m = Messages()
-		self.url = "bolt://localhost:7687"
-		self.username = "neo4j"
-		self.password = "neo4j"
-		self.use_encryption = False
-		self.driver = None
-		self.connected = False
-		self.old_domain = None
-		self.domain = "TESTLAB.LOCALE"
-		self.current_time = int(time.time())
-		self.base_sid = "S-1-5-21-883232822-274137685-4173207997"
-		self.first_names = get_names_pool()
-		self.last_names = get_surnames_pool()
-		self.domain_names = get_domains_pool()
-		self.parameters_json_path = "DEFAULT"
-		self.parameters = DEFAULT_CONFIGURATIONS
-		self.json_file_name = None
-		self.level = "Customized"
-		self.dbname = None
+    def __init__(self):
+        self.m = Messages()
+        self.url = "bolt://localhost:7687"
+        self.username = "neo4j"
+        self.password = "neo4j"
+        self.use_encryption = False
+        self.driver = None
+        self.connected = False
+        self.old_domain = None
+        self.domain = "TESTLAB.LOCALE"
+        self.current_time = int(time.time())
+        self.base_sid = "S-1-5-21-883232822-274137685-4173207997"
+        self.first_names = get_names_pool()
+        self.last_names = get_surnames_pool()
+        self.domain_names = get_domains_pool()
+        self.parameters_json_path = "DEFAULT"
+        self.parameters = DEFAULT_CONFIGURATIONS
+        self.json_file_name = None
+        self.level = "Customized"
+        self.dbname = None
 
-		cmd.Cmd.__init__(self)
+        cmd.Cmd.__init__(self)
 
-	
-	def cmdloop(self):
-		while True:
-			self.m.title()
-			self.do_help("")
-			try:
-				try:
-					cmd.Cmd.cmdloop(self)
-				except EOFError:
-					break
-					return True
+    
+    def cmdloop(self):
+        while True:
+            self.m.title()
+            self.do_help("")
+            try:
+                try:
+                    cmd.Cmd.cmdloop(self)
+                except EOFError:
+                    break
+                    return True
 
-			except KeyboardInterrupt:
-				if self.driver is not None:
-					self.driver.close()
-				return True
+            except KeyboardInterrupt:
+                if self.driver is not None:
+                    self.driver.close()
+                return True
 
-	
-	def help_adconfig(self):
-		print("Configure AD level of security")
+    
+    def help_adconfig(self):
+        print("Configure AD level of security")
 
-	def help_neo4jconfig(self):
-		print("Configure Neo4J database")
+    def help_neo4jconfig(self):
+        print("Configure Neo4J database")
 
-	def help_connect(self):
-		print("Test connection to the database and verify credentials")
-
- 
-	def help_setdomain(self):
-		print("Set domain name (default 'TESTLAB.LOCALE')")
+    def help_connect(self):
+        print("Test connection to the database and verify credentials")
 
  
-	def help_cleardb(self):
-		print("Clear the Neo4J database and set constraints")
+    def help_setdomain(self):
+        print("Set domain name (default 'TESTLAB.LOCALE')")
 
  
-	def help_generate(self):
-		print("Generate an Active Directory attack graph based on the given parameters")
-
-
-	def help_setparams(self):
-		print("Import the settings JSON file containing the parameters for the graph generation")
-
-
-	def help_about(self):
-		print("View information about adsynth")
-
-	def help_importdb(self):
-		print("Import a JSON file to Neo4J")
+    def help_cleardb(self):
+        print("Clear the Neo4J database and set constraints")
 
  
-	def help_exit(self):
-		print("Exit")
-	
-	# def help_remove_constraints(self):
-	#     print("Remove Neo4J constraints")
-	  
+    def help_generate(self):
+        print("Generate an Active Directory attack graph based on the given parameters")
 
-	def do_about(self, args):
-		print_adsynth_software_information()
-
-	def do_adconfig(self, args):
-		# Level of security
-		security_settings = {
-			1: "Customized",
-			2: "Low",
-			3: "High"
-		}
-		security_settings_code = {
-			"Customized": 1,
-			"Low": 2,
-			"High": 3
-		}
-
-		level_code = self.m.input_security_level(
-			"Enter level of security  (type a number 1/2/3) - Cuztomized (1), Low (2), High (3): ", security_settings_code[self.level])
-		self.level = security_settings[level_code]
-		print("Level of Security: {}".format(self.level))
-	
-
-	def do_neo4jconfig(self, args):
-		global neo4j
-		neo4j = safe_import_neo4j()
-		if neo4j is None:
-			return
-		
-		print("Current Settings")
-		print("DB Url: {}".format(self.url))
-		print("DB Username: {}".format(self.username))
-		print("DB Password: {}".format(self.password))
-		print("Use encryption: {}".format(self.use_encryption))
-		print("")
-
-		self.url = self.m.input_default("Enter DB URL", self.url)
-		self.username = self.m.input_default(
-			"Enter DB Username", self.username)
-		self.password = self.m.input_default_password(
-			"Enter DB Password", self.password)
-		self.use_encryption = self.m.input_yesno(
-			"Use encryption?", self.use_encryption)
+    def help_generate_azure(self):
+        print("Generate an Azure Active Directory attack graph based on the given parameters")
 
 
-		print("")
-		print("Confirmed Settings:")
-		print("DB Url: {}".format(self.url))
-		print("DB Username: {}".format(self.username))
-		print("DB Password: {}".format(self.password))
-		print("Use encryption: {}".format(self.use_encryption))
-		print("")
-		print("Testing DB Connection")
-		self.test_db_conn()
+    def help_setparams(self):
+        print("Import the settings JSON file containing the parameters for the graph generation")
+
+    def help_smartparams(self):
+        print("Generate parameters from natural language description")
+
+    def help_about(self):
+        print("View information about adsynth")
+
+    def help_importdb(self):
+        print("Import a JSON file to Neo4J")
 
  
-	def do_setdomain(self, args):
-		passed = args
-		if passed != "":
-			try:
-				self.domain = passed.upper()
-				return
-			except ValueError:
-				pass
+    def help_exit(self):
+        print("Exit")
+    
+    # def help_remove_constraints(self):
+    #     print("Remove Neo4J constraints")
+      
 
-		self.domain = self.m.input_default("Domain", self.domain).upper()
-		print("")
-		print("New Settings:")
-		print("Domain: {}".format(self.domain))
+    def do_about(self, args):
+        print_adsynth_software_information()
+
+    def do_adconfig(self, args):
+        # Level of security
+        security_settings = {
+            1: "Customized",
+            2: "Low",
+            3: "High"
+        }
+        security_settings_code = {
+            "Customized": 1,
+            "Low": 2,
+            "High": 3
+        }
+
+        level_code = self.m.input_security_level(
+            "Enter level of security  (type a number 1/2/3) - Cuztomized (1), Low (2), High (3): ", security_settings_code[self.level])
+        self.level = security_settings[level_code]
+        print("Level of Security: {}".format(self.level))
+    
+
+    def do_neo4jconfig(self, args):
+        global neo4j
+        neo4j = safe_import_neo4j()
+        if neo4j is None:
+            return
+        
+        print("Current Settings")
+        print("DB Url: {}".format(self.url))
+        print("DB Username: {}".format(self.username))
+        print("DB Password: {}".format(self.password))
+        print("Use encryption: {}".format(self.use_encryption))
+        print("")
+
+        self.url = self.m.input_default("Enter DB URL", self.url)
+        self.username = self.m.input_default(
+            "Enter DB Username", self.username)
+        self.password = self.m.input_default_password(
+            "Enter DB Password", self.password)
+        self.use_encryption = self.m.input_yesno(
+            "Use encryption?", self.use_encryption)
 
 
-	def do_exit(self, args):
-		raise KeyboardInterrupt
+        print("")
+        print("Confirmed Settings:")
+        print("DB Url: {}".format(self.url))
+        print("DB Username: {}".format(self.username))
+        print("DB Password: {}".format(self.password))
+        print("Use encryption: {}".format(self.use_encryption))
+        print("")
+        print("Testing DB Connection")
+        self.test_db_conn()
 
  
-	def do_connect(self, args):
-		self.test_db_conn()
+    def do_setdomain(self, args):
+        passed = args
+        if passed != "":
+            try:
+                self.domain = passed.upper()
+                return
+            except ValueError:
+                pass
+
+        self.domain = self.m.input_default("Domain", self.domain).upper()
+        print("")
+        print("New Settings:")
+        print("Domain: {}".format(self.domain))
 
 
-	def remove_constraints(self, session):
-		# Remove constraint - From DBCreator
-		print("Resetting Schema")
-		for constraint in session.run("SHOW CONSTRAINTS"):
-			session.run("DROP CONSTRAINT {}".format(constraint['name']))
+    def do_exit(self, args):
+        raise KeyboardInterrupt
 
-		icount = session.run(
-			"SHOW INDEXES YIELD name RETURN count(*)")
-		for r in icount:
-			ic = int(r['count(*)'])
-				
-		while ic >0:
-			print("Deleting indices from database")
-		
-			showall = session.run(
-				"SHOW INDEXES")
-			for record in showall:
-				name = (record['name'])
-				session.run("DROP INDEX {}".format(name))
-			ic = 0
-		 
-		# Setting constraints
-		print("Setting constraints")
-
-		constraints = [
-				"CREATE CONSTRAINT FOR (n:Base) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:Domain) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:Computer) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:User) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:OU) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:GPO) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:Compromised) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:Group) REQUIRE n.neo4jImportId IS UNIQUE;",
-				"CREATE CONSTRAINT FOR (n:Container) REQUIRE n.neo4jImportId IS UNIQUE;",
-		]
-
-		for constraint in constraints:
-			try:
-				session.run(constraint)
-			except:
-				continue
-		
-
-		session.run("match (a) -[r] -> () delete a, r")
-		session.run("match (a) delete a")
+ 
+    def do_connect(self, args):
+        self.test_db_conn()
 
 
-	def do_cleardb(self, args):
-		if not self.connected:
-			print("Not connected to database. Use connect first")
-			return
+    def remove_constraints(self, session):
+        # Remove constraint - From DBCreator
+        print("Resetting Schema")
+        for constraint in session.run("SHOW CONSTRAINTS"):
+            session.run("DROP CONSTRAINT {}".format(constraint['name']))
 
-		print("Clearing Database")
-		d = self.driver
-		session = d.session()
+        icount = session.run(
+            "SHOW INDEXES YIELD name RETURN count(*)")
+        for r in icount:
+            ic = int(r['count(*)'])
+                
+        while ic >0:
+            print("Deleting indices from database")
+        
+            showall = session.run(
+                "SHOW INDEXES")
+            for record in showall:
+                name = (record['name'])
+                session.run("DROP INDEX {}".format(name))
+            ic = 0
+         
+        # Setting constraints
+        print("Setting constraints")
 
-		# Delete nodes and edges with batching into 10k objects - From DBCreator
-		total = 1
-		while total > 0:
-			result = session.run(
-				"MATCH (n) WITH n LIMIT 10000 DETACH DELETE n RETURN count(n)")
-			for r in result:
-				total = int(r['count(n)'])
-		
-		self.remove_constraints(session)
+        constraints = [
+                "CREATE CONSTRAINT FOR (n:Base) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Domain) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Computer) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:User) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:OU) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:GPO) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Compromised) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Group) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:Container) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZTenant) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZSubscription) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZRole) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZUser) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZGroup) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZServicePrincipal) REQUIRE n.id IS UNIQUE;",
+                "CREATE CONSTRAINT FOR (n:AZApp) REQUIRE n.id IS UNIQUE;"
+        ]
 
-		session.close()
+        for constraint in constraints:
+            try:
+                session.run(constraint)
+            except:
+                continue
+        
 
-		print("DB Cleared and Schema Set")
-	
-
-	def do_setparams(self, args):
-		passed = args
-		if passed != "":
-			try:
-				json_path = passed
-				self.parameters = get_parameters_from_json(json_path)
-				self.parameters_json_path = json_path
-				print_all_parameters(self.parameters)
-				return
-			except ValueError:
-				pass
-
-		json_path = self.m.input_default("Parameters JSON file (copy and paste the full path of your parameter JSON file)", self.parameters_json_path)
-		self.parameters = get_parameters_from_json(json_path)
-		if self.parameters == DEFAULT_CONFIGURATIONS:
-			self.parameters_json_path = "DEFAULT"
-		else:
-			self.parameters_json_path = json_path
-
-		print_all_parameters(self.parameters)
-
-
-	def test_db_conn(self):
-		if neo4j is None:
-			print("Please setup Neo4J database first using 'neo4jconfig'")
-			return
-		
-		try:
-			if self.driver is not None:
-				self.driver.close()
-			self.driver = neo4j.GraphDatabase.driver(
-				self.url, auth=(self.username, self.password), encrypted=self.use_encryption)
-			with self.driver.session() as session:
-				result = session.run("RETURN 1")
-			self.connected = True
-			print("Database Connection Successful!")
-		except neo4j.exceptions.AuthError:
-			print("Authentication failed: Incorrect username or password.")
-		except neo4j.exceptions.ServiceUnavailable:
-			print("Neo4J Service unavailable: Unable to connect to the database. Please make sure you have activated Neo4J.")
-		except:
-			self.connected = False
-			print("Database Connection Failed. Check your settings.")
+        session.run("match (a) -[r] -> () delete a, r")
+        session.run("match (a) delete a")
 
 
-	def do_importdb(self, args):
-		if not self.connected:
-			print("Neo4J connection has not been configured yet. Please proceed 'neo4jconfig' first.")
-			return
-		print("Please input the name of a JSON file in the folder 'generated_datasets' (excluding the file extension). Otherwise, provide the full path to your intended JSON file")
-		print("If you want to import the dataset you have just generated in this terminal, please click Enter")
-		dataset_name = input("Dataset to be imported: ")
-		if not dataset_name:
-			if self.dbname is None:
-				print("No dataset generated recently")
-				return
-			path = f"{os.getcwd()}/generated_datasets/{self.dbname}.json"
-		else:
-			path = f"{os.getcwd()}/generated_datasets/{dataset_name}.json"
-			if not os.path.exists(path):
-				path = dataset_name
-				if not os.path.exists(path):
-					print("There is no such file.")
-					return
-		try:        
-			self.test_db_conn()
-		except:
-			return
+    def do_cleardb(self, args):
+        if not self.connected:
+            print("Not connected to database. Use connect first")
+            return
 
-		session = self.driver.session()
+        print("Clearing Database")
+        d = self.driver
+        session = d.session()
 
-		try:
-			self.do_cleardb("a")
-			print("========== IMPORT PROCESS ==========")
-	
-			# Read the NDJSON file
-			with open(path, 'r') as f:
-				for line in f:
-					if line.strip():
-						obj = json.loads(line.strip())
-						if obj.get("type") == "node":
-							props = obj.get('properties', {})
-							labels = obj.get('labels', ['Node'])
-							label_str = ':'.join(labels)
-					
-							if props:
-								prop_items = ', '.join([f"{k}: ${k}" for k in props.keys()])
-								cypher = f"CREATE (n:{label_str} {{{prop_items}}})"
-								session.run(cypher, props)
-	 
-			print("Import has finished")
-		
-		except neo4j.exceptions.Neo4jError as e:
-			print(f"Neo4jError occurred: {e}")
-		except Exception as e:
-			print(f"An error occurred: {e}")
-		finally:
-			session.close()
+        # Delete nodes and edges with batching into 10k objects - From DBCreator
+        total = 1
+        while total > 0:
+            result = session.run(
+                "MATCH (n) WITH n LIMIT 10000 DETACH DELETE n RETURN count(n)")
+            for r in result:
+                total = int(r['count(n)'])
+        
+        self.remove_constraints(session)
 
-	def do_generate(self, args):
-		
-		print(self.level)
-		passed = args
-		if passed != "":
-			try:
-				self.json_file_name = passed
-			except ValueError:
-				self.json_file_name = None
+        session.close()
 
-		# Disable Neo4J from ADSynth
-		# self.test_db_conn()
-		# self.do_cleardb("a")
+        print("DB Cleared and Schema Set")
+    
 
-		reset_DB()
-		
-		self.generate_data()
-		self.old_domain = self.domain
+    def do_setparams(self, args):
+        passed = args
+        if passed != "":
+            try:
+                json_path = passed
+                self.parameters = get_parameters_from_json(json_path)
+                self.parameters_json_path = json_path
+                print_all_parameters(self.parameters)
+                return
+            except ValueError:
+                pass
 
+        json_path = self.m.input_default("Parameters JSON file (copy and paste the full path of your parameter JSON file)", self.parameters_json_path)
+        self.parameters = get_parameters_from_json(json_path)
+        if self.parameters == DEFAULT_CONFIGURATIONS:
+            self.parameters_json_path = "DEFAULT"
+        else:
+            self.parameters_json_path = json_path
 
-	def generate_data(self):
-		start_ = timer()
-		seed_number = get_single_int_param_value("seed", self.parameters)
-		if seed_number > 0:
-			random.seed(seed_number)
+        print_all_parameters(self.parameters)
 
-		# if not self.connected:
-		#     print("Not connected to database. Use connect first")
-		#     return
-		
-		domain_dn = get_domain_dn(self.domain)
+    def do_smartparams(self, args):
+        """Generate parameters using Azure AI from natural language"""
+    
+        if not args.strip():
+            prompt = input("Describe your organization (e.g., 'Medium healthcare org with high security'): ")
+        else:
+            prompt = args
+    
+        print(f"Generating parameters for: {prompt}")
+    
+        try:
+            generator = SmartParameterGenerator()
+            ai_params = generator.generate_parameters(prompt)
+        
+            if ai_params:
+                print("\n" + "="*50)
+                print("AI GENERATED PARAMETERS:")
+                print("="*50)
+                print(json.dumps(ai_params, indent=2))
+                
+                # Validate that we have the minimum required parameters
+                required_keys = ["User", "Computer", "Admin"]
+                missing_keys = [key for key in required_keys if key not in ai_params]
+                
+                if missing_keys:
+                    print(f"\nWarning: Missing required sections: {missing_keys}")
+                    print("Using default configuration as base...")
+                    
+                    # Start with defaults and update with AI params
+                    from adsynth.adsynth_templates.default_config import DEFAULT_CONFIGURATIONS
+                    merged_params = DEFAULT_CONFIGURATIONS.copy()
+                    
+                    # Deep update function
+                    def deep_update(base, update):
+                        for key, value in update.items():
+                            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+                                deep_update(base[key], value)
+                            else:
+                                base[key] = value
+                    
+                    deep_update(merged_params, ai_params)
+                    final_params = merged_params
+                else:
+                    # AI params are complete enough to use directly
+                    final_params = ai_params
+                
+                # Validate critical parameters
+                if (final_params.get("User", {}).get("nUsers", 0) > 0 and 
+                    final_params.get("Computer", {}).get("nComputers", 0) > 0):
+                    
+                    self.parameters = final_params
+                    self.parameters_json_path = "AI_GENERATED"
+                    
+                    print("\n" + "="*50)
+                    print("FINAL PARAMETERS TO BE USED:")
+                    print("="*50)
+                    print_all_parameters(self.parameters)
+                    
+                    # Ask if user wants to save
+                    save = self.m.input_yesno("\nSave these parameters to file?", True)
+                    if save:
+                        # Create filename from prompt
+                        safe_prompt = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).strip()
+                        safe_prompt = safe_prompt.replace(' ', '_')[:30]
+                        filename = f"ai_generated_{safe_prompt}.json"
+                        
+                        # Ensure the directory exists
+                        os.makedirs("adsynth/experiment_params", exist_ok=True)
+                        filepath = f"adsynth/experiment_params/{filename}"
+                        
+                        with open(filepath, 'w') as f:
+                            json.dump(final_params, f, indent=4)
+                        print(f"Parameters saved to {filepath}")
+                    
+                    print("\nParameters generated and loaded successfully!")
+                    
+                else:
+                    print("\nGenerated parameters invalid (missing users or computers).")
+                    print("Please check your organization description and try again.")
+                    print("Keeping current parameters.")
+                    
+            else:
+                print("\nFailed to generate parameters.")
+                print("Possible issues:")
+                print("- Check Azure AI configuration in .env file")
+                print("- Verify API key and endpoint are correct")
+                print("- Check internet connectivity")
+                print("Keeping current parameters.")
+                
+        except Exception as e:
+            print(f"\nError occurred: {e}")
+            print("This might be due to:")
+            print("- Missing or incorrect Azure OpenAI credentials")
+            print("- Network connectivity issues")
+            print("- API quota exceeded")
+            print("Keeping current parameters.")
 
-		nTiers = get_num_tiers(self.parameters)
-
-		# RIDs below 1000 are used for default principals.
-		# RIDs of other objects should start from 1000.
-		# Idea Ref: DBCreator and https://www.itprotoday.com/security/q-what-are-exact-roles-windows-accounts-sid-and-more-specifically-its-rid-windows-security
-		ridcount.extend([1000])  
-
-		computers = []
-		
-		users = []
-
-		convert_to_digraph = get_single_int_param_value("convert_to_directed_graphs", self.parameters)
-		
-		# session = self.driver.session()
-
-		print(f"Initiating the Active Directory Domain - {self.domain}")
-		functional_level = create_domain(self.domain, self.base_sid, domain_dn, self.parameters) # Ref: ADSimulator, DBCreator
-		
-		print("Building the fundamental framework of a tiered Active Directory model")
-		create_ad_skeleton(self.domain, self.base_sid, self.parameters, nTiers)
-
-		# -------------------------------------------------------------
-		# Active Directory Default OUs, Groups and GPOs
-		# Ref: DBCreator and ADSimulator have produced some default AD objects and relationships in their code
-		# Utilising Microsoft documentation as a knowledge base, I migrated their codes into ADSynth built-in database.
-		
-		print("Creating the default domain groups")
-		create_default_groups(self.domain, self.base_sid, self.old_domain) # Ref: ADSimulator, DBCreator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-		
-		print("Creating the admin groups")
-		create_admin_groups(self.domain, self.base_sid, nTiers)
-		
-		ddp = cs(str(uuid.uuid4()), self.base_sid).upper()
-		ddcp = cs(str(uuid.uuid4()), self.base_sid).upper()
-		dcou = cs(str(uuid.uuid4()), self.base_sid).upper()
-		gpos_container = cs(str(uuid.uuid4()), self.base_sid).upper()
-
-		print("Creating GPOs container")
-		create_gpos_container(self.domain, domain_dn, gpos_container)
-		
-		print("Creating default GPOs")
-		create_default_gpos(self.domain, domain_dn, ddp, ddcp) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpod/566e983e-3b72-4b2d-9063-a00ebc9514fd
-
-		print("Creating Domain Controllers OU")
-		create_domain_controllers_ou(self.domain, domain_dn, dcou) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/delegating-administration-of-default-containers-and-ous
-
-		print("Applying Default GPOs")
-		apply_default_gpos(self.domain, ddp, ddcp, dcou) # Ref: DBCreator, ADSimulator
-
-		
-		# ENTERPRISE ADMINS
-		# Adding Ent Admins -> High Value Targets
-		print("Creating Enterprise Admins ACLs")
-		create_enterprise_admins_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-
-
-		# ADMINISTRATORS
-		# Adding Administrators -> High Value Targets
-		print("Creating Administrators ACLs")
-		create_administrators_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-
-
-		# DOMAIN ADMINS
-		# Adding Domain Admins -> High Value Targets
-		print("Creating Domain Admins ACLs")
-		create_domain_admins_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-
-
-		# DC Groups
-		# Extra ENTERPRISE READ-ONLY DOMAIN CONTROLLERS
-		print("Generating DC groups ACLs")
-		create_default_dc_groups_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-
-		# DOMAIN CONTROLLERS
-		# Ref: ADSimulator, DBCreator and Microsoft, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-authsod/c4012a57-16a9-42eb-8f64-aa9e04698dca
-		print("Creating Domain Controllers")
-		dc_properties_list, domain_controllers = generate_dcs(self.domain, self.base_sid, domain_dn, dcou, self.current_time, self.parameters, functional_level) # O(1)
-
-		# -------------------------------------------------------------
-		# GPOs - Creating GPOs for the root OUs in a Tier Model
-		print("Applying GPOs to critical OUs and tiers")
-		apply_gpos(self.domain, self.base_sid, nTiers) # Ref: Russell Smith, https://petri.com/keep-active-directory-secure-using-privileged-access-workstations/, https://volkandemirci.org/2022/01/17/privileged-access-workstations-kurulumu-ve-yapilandirilmasi-2/
-		
-
-		# Impose restriction on non-privileged OU
-		apply_restriction_gpos(self.domain, self.base_sid, self.parameters)
+    def test_db_conn(self):
+        if neo4j is None:
+            print("Please setup Neo4J database first using 'neo4jconfig'")
+            return
+        
+        try:
+            if self.driver is not None:
+                self.driver.close()
+            self.driver = neo4j.GraphDatabase.driver(
+                self.url, auth=(self.username, self.password), encrypted=self.use_encryption)
+            with self.driver.session() as session:
+                result = session.run("RETURN 1")
+            self.connected = True
+            print("Database Connection Successful!")
+        except neo4j.exceptions.AuthError:
+            print("Authentication failed: Incorrect username or password.")
+        except neo4j.exceptions.ServiceUnavailable:
+            print("Neo4J Service unavailable: Unable to connect to the database. Please make sure you have activated Neo4J.")
+        except:
+            self.connected = False
+            print("Database Connection Failed. Check your settings.")
 
 
-		# Place all GPOs in the GPOs container
-		place_gpos_in_container(self.domain, gpos_container)
-			
-		# -------------------------------------------------------------
-		# DEFAULT USERS and group relationships
-		# Ref: ADSimulator produced these in their code
-		# Utilising Microsoft documentation as a knowledge base, I migrated their code into ADSynth built-in database.
-		# https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-default-user-accounts
-		print("Generating default users")
-		generate_guest_user(self.domain, self.base_sid, self.parameters)
-		generate_default_account(self.domain, self.base_sid, self.parameters)
-		generate_administrator(self.domain, self.base_sid, self.parameters)
-		generate_krbtgt_user(self.domain, self.base_sid, self.parameters)
-		link_default_users_to_domain(self.domain, self.base_sid)
-		
-		# Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-default-user-accounts
-		print("Creating ACLs for default users")
-		create_default_users_acls(self.domain, self.base_sid)
+    def do_importdb(self, args):
+        if not self.connected:
+            print("Neo4J connection has not been configured yet. Please proceed 'neo4jconfig' first.")
+            return
+        print("Please input the name of a JSON file in the folder 'generated_datasets' (excluding the file extension). Otherwise, provide the full path to your intended JSON file")
+        print("If you want to import the dataset you have just generated in this terminal, please click Enter")
+        dataset_name = input("Dataset to be imported: ")
+        if not dataset_name:
+            if self.dbname is None:
+                print("No dataset generated recently")
+                return
+            path = f"{os.getcwd()}/generated_datasets/{self.dbname}.json"
+        else:
+            path = f"{os.getcwd()}/generated_datasets/{dataset_name}.json"
+            if not os.path.exists(path):
+                path = dataset_name
+                if not os.path.exists(path):
+                    print("There is no such file.")
+                    return
+        try:        
+            self.test_db_conn()
+        except:
+            return
 
-		# Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-		# Adminstrator account is Member of High value groups
-		print("Creating memberships for Administrator group")
-		create_adminstrator_memberships(self.domain)
+        session = self.driver.session()
 
-		# Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-		print("Assigning members to default groups")
-		generate_default_member_of(self.domain, self.base_sid, self.old_domain)
+        try:
+            self.do_cleardb("a")
+            print("========== IMPORT PROCESS ==========")
+    
+            # Read the NDJSON file
+            with open(path, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        obj = json.loads(line.strip())
+                        if obj.get("type") == "node":
+                            props = obj.get('properties', {})
+                            labels = obj.get('labels', ['Node'])
+                            label_str = ':'.join(labels)
+                    
+                            if props:
+                                prop_items = ', '.join([f"{k}: ${k}" for k in props.keys()])
+                                cypher = f"CREATE (n:{label_str} {{{prop_items}}})"
+                                session.run(cypher, props)
+     
+            print("Import has finished")
+        
+        except neo4j.exceptions.Neo4jError as e:
+            print(f"Neo4jError occurred: {e}")
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        finally:
+            session.close()
 
-		# Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-b--privileged-accounts-and-groups-in-active-directory
-		print("Creating ACLs for default groups")
-		create_default_groups_acls(self.domain, self.base_sid)
+
+    def do_generate(self, args):
+        
+        print(self.level)
+        passed = args
+        if passed != "":
+            try:
+                self.json_file_name = passed
+            except ValueError:
+                self.json_file_name = None
+
+        # Disable Neo4J from ADSynth
+        # self.test_db_conn()
+        # self.do_cleardb("a")
+
+        reset_DB()
+        
+        self.generate_data()
+        self.old_domain = self.domain
 
 
-		# -------------------------------------------------------------
-		# Creating users
-		num_users = get_int_param_value("User", "nUsers", self.parameters)
-		print(f"Creating {num_users} users")
+    def do_generate_azure(self, args):
 
-		# Get a list of enabled and disabled users
-		users, disabled_users = generate_users(self.domain, self.base_sid, num_users, self.current_time, self.first_names, self.last_names, self.parameters) # Ref: ADSimulator, DBCreator
+        print("Generating Azure Active Directory graph")
+        self.generate_data_azure()
 
-		# Segragate admin and regular users
-		perc_admin = get_perc_param_value("Admin", "Admin_Percentage", self.parameters)
-		all_admins, all_enabled_users = segregate_list(users, [perc_admin, 100 - perc_admin])
 
-		# Segregate admins and misconfigured admins in regular Users OU
-		misconfig_admin_regular_perc = get_perc_param_value("nodeMisconfig", "admin_regular", self.parameters)
-		if misconfig_admin_regular_perc > 50:
-			misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
-		admin, misconfig_admin = segregate_list(all_admins, [100 - misconfig_admin_regular_perc, misconfig_admin_regular_perc])
+    def generate_data(self):
+        start_ = timer()
+        seed_number = get_single_int_param_value("seed", self.parameters)
+        if seed_number > 0:
+            random.seed(seed_number)
 
-		# Segregate regular users, misconfigured users in Admin OU and in Computers OU
-		misconfig_user_comp_perc = get_perc_param_value("nodeMisconfig", "user_comp", self.parameters)
-		if misconfig_admin_regular_perc + misconfig_user_comp_perc > 50:
-			misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
-			misconfig_user_comp_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["user_comp"]
-		enabled_users, misconfig_regular_users, misconfig_users_comps = \
-			segregate_list(all_enabled_users, [100 - misconfig_admin_regular_perc - misconfig_user_comp_perc, misconfig_admin_regular_perc, misconfig_user_comp_perc])
+        # if not self.connected:
+        #     print("Not connected to database. Use connect first")
+        #     return
+        
+        domain_dn = get_domain_dn(self.domain)
+
+        nTiers = get_num_tiers(self.parameters) 
+
+        # RIDs below 1000 are used for default principals.
+        # RIDs of other objects should start from 1000.
+        # Idea Ref: DBCreator and https://www.itprotoday.com/security/q-what-are-exact-roles-windows-accounts-sid-and-more-specifically-its-rid-windows-security
+        ridcount.extend([1000])  
+
+        computers = []
+        
+        users = []
+
+        convert_to_digraph = get_single_int_param_value("convert_to_directed_graphs", self.parameters)
+        
+        # session = self.driver.session()
+
+        print(f"Initiating the Active Directory Domain - {self.domain}")
+        functional_level = create_domain(self.domain, self.base_sid, domain_dn, self.parameters) # Ref: ADSimulator, DBCreator
+        
+        print("Building the fundamental framework of a tiered Active Directory model")
+        create_ad_skeleton(self.domain, self.base_sid, self.parameters, nTiers)
+
+        # -------------------------------------------------------------
+        # Active Directory Default OUs, Groups and GPOs
+        # Ref: DBCreator and ADSimulator have produced some default AD objects and relationships in their code
+        # Utilising Microsoft documentation as a knowledge base, I migrated their codes into ADSynth built-in database.
+        
+        print("Creating the default domain groups")
+        create_default_groups(self.domain, self.base_sid, self.old_domain) # Ref: ADSimulator, DBCreator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+        
+        print("Creating the admin groups")
+        create_admin_groups(self.domain, self.base_sid, nTiers)
+        
+        ddp = cs(str(uuid.uuid4()), self.base_sid).upper()
+        ddcp = cs(str(uuid.uuid4()), self.base_sid).upper()
+        dcou = cs(str(uuid.uuid4()), self.base_sid).upper()
+        gpos_container = cs(str(uuid.uuid4()), self.base_sid).upper()
+
+        print("Creating GPOs container")
+        create_gpos_container(self.domain, domain_dn, gpos_container)
+        
+        print("Creating default GPOs")
+        create_default_gpos(self.domain, domain_dn, ddp, ddcp) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-gpod/566e983e-3b72-4b2d-9063-a00ebc9514fd
+
+        print("Creating Domain Controllers OU")
+        create_domain_controllers_ou(self.domain, domain_dn, dcou) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/delegating-administration-of-default-containers-and-ous
+
+        print("Applying Default GPOs")
+        apply_default_gpos(self.domain, ddp, ddcp, dcou) # Ref: DBCreator, ADSimulator
+
+        
+        # ENTERPRISE ADMINS
+        # Adding Ent Admins -> High Value Targets
+        print("Creating Enterprise Admins ACLs")
+        create_enterprise_admins_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+
+
+        # ADMINISTRATORS
+        # Adding Administrators -> High Value Targets
+        print("Creating Administrators ACLs")
+        create_administrators_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+
+
+        # DOMAIN ADMINS
+        # Adding Domain Admins -> High Value Targets
+        print("Creating Domain Admins ACLs")
+        create_domain_admins_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+
+
+        # DC Groups
+        # Extra ENTERPRISE READ-ONLY DOMAIN CONTROLLERS
+        print("Generating DC groups ACLs")
+        create_default_dc_groups_acls(self.domain) # Ref: DBCreator, ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+
+        # DOMAIN CONTROLLERS
+        # Ref: ADSimulator, DBCreator and Microsoft, https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-authsod/c4012a57-16a9-42eb-8f64-aa9e04698dca
+        print("Creating Domain Controllers")
+        dc_properties_list, domain_controllers = generate_dcs(self.domain, self.base_sid, domain_dn, dcou, self.current_time, self.parameters, functional_level) # O(1)
+
+        # -------------------------------------------------------------
+        # GPOs - Creating GPOs for the root OUs in a Tier Model
+        print("Applying GPOs to critical OUs and tiers")
+        apply_gpos(self.domain, self.base_sid, nTiers) # Ref: Russell Smith, https://petri.com/keep-active-directory-secure-using-privileged-access-workstations/, https://volkandemirci.org/2022/01/17/privileged-access-workstations-kurulumu-ve-yapilandirilmasi-2/
+        
+
+        # Impose restriction on non-privileged OU
+        apply_restriction_gpos(self.domain, self.base_sid, self.parameters)
+
+
+        # Place all GPOs in the GPOs container
+        place_gpos_in_container(self.domain, gpos_container)
+            
+        # -------------------------------------------------------------
+        # DEFAULT USERS and group relationships
+        # Ref: ADSimulator produced these in their code
+        # Utilising Microsoft documentation as a knowledge base, I migrated their code into ADSynth built-in database.
+        # https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+        print("Generating default users")
+        generate_guest_user(self.domain, self.base_sid, self.parameters)
+        generate_default_account(self.domain, self.base_sid, self.parameters)
+        generate_administrator(self.domain, self.base_sid, self.parameters)
+        generate_krbtgt_user(self.domain, self.base_sid, self.parameters)
+        link_default_users_to_domain(self.domain, self.base_sid)
+        
+        # Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-default-user-accounts
+        print("Creating ACLs for default users")
+        create_default_users_acls(self.domain, self.base_sid)
+
+        # Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+        # Adminstrator account is Member of High value groups
+        print("Creating memberships for Administrator group")
+        create_adminstrator_memberships(self.domain)
+
+        # Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+        print("Assigning members to default groups")
+        generate_default_member_of(self.domain, self.base_sid, self.old_domain)
+
+        # Ref: ADSimulator and Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-b--privileged-accounts-and-groups-in-active-directory
+        print("Creating ACLs for default groups")
+        create_default_groups_acls(self.domain, self.base_sid)
+
+
+        # -------------------------------------------------------------
+        # Creating users
+        num_users = get_int_param_value("User", "nUsers", self.parameters)
+        print(f"Creating {num_users} users")
+
+        # Get a list of enabled and disabled users
+        users, disabled_users = generate_users(self.domain, self.base_sid, num_users, self.current_time, self.first_names, self.last_names, self.parameters) # Ref: ADSimulator, DBCreator
+
+        # Segragate admin and regular users
+        perc_admin = get_perc_param_value("Admin", "Admin_Percentage", self.parameters)
+        all_admins, all_enabled_users = segregate_list(users, [perc_admin, 100 - perc_admin])
+
+        # Segregate admins and misconfigured admins in regular Users OU
+        misconfig_admin_regular_perc = get_perc_param_value("nodeMisconfig", "admin_regular", self.parameters)
+        if misconfig_admin_regular_perc > 50:
+            misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
+        admin, misconfig_admin = segregate_list(all_admins, [100 - misconfig_admin_regular_perc, misconfig_admin_regular_perc])
+
+        # Segregate regular users, misconfigured users in Admin OU and in Computers OU
+        misconfig_user_comp_perc = get_perc_param_value("nodeMisconfig", "user_comp", self.parameters)
+        if misconfig_admin_regular_perc + misconfig_user_comp_perc > 50:
+            misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
+            misconfig_user_comp_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["user_comp"]
+        enabled_users, misconfig_regular_users, misconfig_users_comps = \
+            segregate_list(all_enabled_users, [100 - misconfig_admin_regular_perc - misconfig_user_comp_perc, misconfig_admin_regular_perc, misconfig_user_comp_perc])
  
 
-		# -------------------------------------------------------------
-		# Creating COMPUTERS
-		num_computers = get_int_param_value("Computer", "nComputers", self.parameters)
-		print("Generating", str(num_computers), "computers")
+        # -------------------------------------------------------------
+        # Creating COMPUTERS
+        num_computers = get_int_param_value("Computer", "nComputers", self.parameters)
+        print("Generating", str(num_computers), "computers")
 
-		# Ref: ADSimulator, DBCreator, BadBlood
-		#      Microsoft, https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-devices
-		computers, PAW, Servers, Workstations = generate_computers(self.domain, self.base_sid, num_computers, computers, self.current_time, self.parameters)
+        # Ref: ADSimulator, DBCreator, BadBlood
+        #      Microsoft, https://learn.microsoft.com/en-us/security/privileged-access-workstations/privileged-access-devices
+        computers, PAW, Servers, Workstations = generate_computers(self.domain, self.base_sid, num_computers, computers, self.current_time, self.parameters)
 
-		Workstations, misconfig_workstations = segregate_list(Workstations, [100 - misconfig_user_comp_perc, misconfig_user_comp_perc])
-		place_computers_in_tiers(self.domain, self.base_sid, nTiers, self.parameters, PAW, Servers, Workstations, misconfig_users_comps)
+        Workstations, misconfig_workstations = segregate_list(Workstations, [100 - misconfig_user_comp_perc, misconfig_user_comp_perc])
+        place_computers_in_tiers(self.domain, self.base_sid, nTiers, self.parameters, PAW, Servers, Workstations, misconfig_users_comps)
 
-		
-		# -------------------------------------------------------------
-		# Admin Users
-		print("Allocate Admin Users to tiers")
+        
+        # -------------------------------------------------------------
+        # Admin Users
+        print("Allocate Admin Users to tiers")
 
-		# Retrieve members of server operators and print operators
-		# to later generate sessions on Domain Controllers
-		server_operators = [] # Server Operators 
-		print_operators = []  # Print Operators 
-		
-		place_admin_users_in_tiers(self.domain, self.base_sid, nTiers, admin, misconfig_regular_users, server_operators, print_operators, self.parameters)
-		
-		# Non-admin Users
-		print("Allocate non-admin users to tiers")
-		place_normal_users_in_tiers(self.domain, enabled_users, disabled_users, misconfig_admin, misconfig_workstations, nTiers)
-
-
-		# -------------------------------------------------------------
-		# Creating GROUPS
-		print("Creating distribution groups and security groups")
-		num_regular_groups = create_groups(self.domain, self.base_sid, self.parameters, nTiers)
-		
-		print("Nesting groups")
-		nest_groups(self.domain, self.parameters) # Ref: DBCreator and ADSimulator
-
-		# Adding Users to Groups
-		# Admin users have been place into admistrative tiers. Now comes the normal users
-		print("Adding users to groups")
-		it_users = place_users_in_groups(self.domain, nTiers, self.parameters)
+        # Retrieve members of server operators and print operators
+        # to later generate sessions on Domain Controllers
+        server_operators = [] # Server Operators 
+        print_operators = []  # Print Operators 
+        
+        place_admin_users_in_tiers(self.domain, self.base_sid, nTiers, admin, misconfig_regular_users, server_operators, print_operators, self.parameters)
+        
+        # Non-admin Users
+        print("Allocate non-admin users to tiers")
+        place_normal_users_in_tiers(self.domain, enabled_users, disabled_users, misconfig_admin, misconfig_workstations, nTiers)
 
 
-		# -------------------------------------------------------------
-		print("Generate sessions")
-		create_sessions(nTiers, PAW_TIERS, S_TIERS, WS_TIERS, self.parameters)
-		
-		print("Generate cross-tier sessions")
-		create_misconfig_sessions(nTiers, self.level, self.parameters, len(enabled_users) + len(admin))
+        # -------------------------------------------------------------
+        # Creating GROUPS
+        print("Creating distribution groups and security groups")
+        num_regular_groups = create_groups(self.domain, self.base_sid, self.parameters, nTiers)
+        
+        print("Nesting groups")
+        nest_groups(self.domain, self.parameters) # Ref: DBCreator and ADSimulator
 
-		# Print Operators and Server Operators can log into Domain Controllers
-		# Idea Ref: Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
-		print("Print Operators and Server Operators can log into Domain Controllers")
-		create_dc_sessions(domain_controllers, server_operators, print_operators) # O(num of Domain Controllers)
-	
-		
-		# -------------------------------------------------------------
-		# Generate non-ACL Permissions
-		print("Generating non-ACL permissions")
-		create_control_management_permissions(self.domain, nTiers, False, self.parameters, convert_to_digraph)
-		
-		print("Generating misconfigured non-ACL permissions on individuals")
-		create_misconfig_permissions_on_individuals(nTiers, ADMIN_USERS, ENABLED_USERS, self.level, self.parameters, len(enabled_users) + len(admin))
-		
-		print("Generating misconfigured permissions on sets - From groups to OUs")
-		num_local_admin_groups = sum(len(subarray) for subarray in LOCAL_ADMINS)
-		create_misconfig_permissions_on_groups(self.domain, nTiers, self.level, self.parameters, num_local_admin_groups)     
-
-		print("Generating misconfigured membership - Group Nesting")
-		create_misconfig_group_nesting(self.domain, nTiers, self.level, self.parameters, num_regular_groups)
-
-		# -------------------------------------------------------------
-		#  Generate ACL Permissions, including genericall, genericwrite, writeowner, ....
-		print("Creating ACLs permissions")
-		create_control_management_permissions(self.domain, nTiers, True, self.parameters, convert_to_digraph)
-
-		# -------------------------------------------------------------
-		print("Adding Admin rights")
-		assign_administration_to_admin_principals(self.domain, nTiers, convert_to_digraph)
-		
-		print("Adding Local Admin rights")
-		assign_local_admin_rights(self.domain, nTiers, self.parameters, convert_to_digraph) 
-
-		
-		# -------------------------------------------------------------
-		# Default ACLs
-		# Ref: ADSimulator
-		create_default_AllExtendedRights(self.domain, nTiers, convert_to_digraph) # Ref: ADSimulator 
-		create_default_GenericWrite(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
-		create_default_owns(self.domain, convert_to_digraph) # Ref: ADSimulator
-		create_default_write_dacl_owner(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
-		create_default_GenericAll(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
-
-		
-		# -------------------------------------------------------------
-		# Kerberoastable users
-		print("Creating Kerberoastable users")
-		create_kerberoastable_users(nTiers, self.parameters) # O(nUsers * perc of Kerberoastable)
-		
-		num_nodes = len(NODES)
-		num_edges = len(dict_edges)
-		print("Num of nodes = ", len(NODES))
-		print("Num of edges = ", len(dict_edges))
-
-		try:
-			print("Graph density = ", round(num_edges / (num_nodes * (num_nodes - 1)), 5))
-		except:
-			pass
-
-		for i in NODE_GROUPS:
-			print("Number of ", i, " = ", len(NODE_GROUPS[i]))
-		
-		perc_misconfig_sessions = get_perc_param_value("perc_misconfig_sessions", "Low", self.parameters) / 100
-		num_misconfig = int(perc_misconfig_sessions * (len(enabled_users) + len(admin)))
-		print(f"Number of regular users = {len(enabled_users) + len(admin)} --- Num misconfig sessions = {num_misconfig}")
-
-		perc_misconfig_permissions = get_perc_param_value("perc_misconfig_permissions", "Low", self.parameters) / 100
-		num_misconfig = int(perc_misconfig_permissions * (len(enabled_users) + len(admin)))
-		print(f"Number of regular users = {len(enabled_users) + len(admin)} --- Num misconfig permissions = {num_misconfig}")
-
-		print("Dump to JSON file")
-		current_datetime = datetime.now()
-		# Format the date and time to include seconds
-		filename = current_datetime.strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
-		
-		with open(f"generated_datasets/{filename}.json", "w") as f:
-			for obj in NODES:
-				obj["type"] = "node"
-				# Use json.dumps() to convert the object to a JSON string without square brackets
-				json_str = json.dumps(obj, separators=(',', ':'))
-				# Write the JSON string to the file with a newline character
-				f.write(json_str + '\n')
-
-		# Open the file in append mode
-		with open(f"generated_datasets/{filename}.json", 'a') as f:
-			for obj in EDGES:
-				# Use json.dumps() to convert the object to a JSON string without square brackets
-				json_str = json.dumps(obj, separators=(',', ':'))
-				# Write the JSON string to the file with a newline character
-				f.write(json_str + '\n')
-		
-		self.dbname = filename
-		# ===============================================
-		
-		end_ = timer()
-		print("Execution time = ", end_ - start_)
-
-		path = f"{os.getcwd()}/generated_datasets/{filename}.json"
-		query = f"PROFILE CALL apoc.periodic.iterate(\"CALL apoc.import.json('{path}')\", \"RETURN 1\", {{batchSize:1000}})"
-		# session.run(query)
-		# session.close()
-
-		print("Database Generation Finished!")
+        # Adding Users to Groups
+        # Admin users have been place into admistrative tiers. Now comes the normal users
+        print("Adding users to groups")
+        it_users = place_users_in_groups(self.domain, nTiers, self.parameters)
 
 
-	def write_json(self, session):
-		json_path = os.getcwd() + "/" + self.json_file_name
-		query = "CALL apoc.export.json.all('" + json_path + "',{useTypes:true})"
-		session.run(query)
-		print("Graph exported in", json_path)
-		
-		
-	def help_smartparams(self):
-		print("Generate parameters from natural language description")
+        # -------------------------------------------------------------
+        print("Generate sessions")
+        create_sessions(nTiers, PAW_TIERS, S_TIERS, WS_TIERS, self.parameters)
+        
+        print("Generate cross-tier sessions")
+        create_misconfig_sessions(nTiers, self.level, self.parameters, len(enabled_users) + len(admin))
 
-	def do_smartparams(self, args):
-		"""Generate parameters using Azure AI from natural language"""
-	
-		if not args.strip():
-			prompt = input("Describe your organization (e.g., 'Medium healthcare org with high security'): ")
-		else:
-			prompt = args
-	
-		print(f"Generating parameters for: {prompt}")
-	
-		try:
-			generator = SmartParameterGenerator()
-			ai_params = generator.generate_parameters(prompt)
-		
-			if ai_params:
-				print("\n" + "="*50)
-				print("AI GENERATED PARAMETERS:")
-				print("="*50)
-				print(json.dumps(ai_params, indent=2))
-				
-				# Validate that we have the minimum required parameters
-				required_keys = ["User", "Computer", "Admin"]
-				missing_keys = [key for key in required_keys if key not in ai_params]
-				
-				if missing_keys:
-					print(f"\nWarning: Missing required sections: {missing_keys}")
-					print("Using default configuration as base...")
-					
-					# Start with defaults and update with AI params
-					from adsynth.adsynth_templates.default_config import DEFAULT_CONFIGURATIONS
-					merged_params = DEFAULT_CONFIGURATIONS.copy()
-					
-					# Deep update function
-					def deep_update(base, update):
-						for key, value in update.items():
-							if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-								deep_update(base[key], value)
-							else:
-								base[key] = value
-					
-					deep_update(merged_params, ai_params)
-					final_params = merged_params
-				else:
-					# AI params are complete enough to use directly
-					final_params = ai_params
-				
-				# Validate critical parameters
-				if (final_params.get("User", {}).get("nUsers", 0) > 0 and 
-					final_params.get("Computer", {}).get("nComputers", 0) > 0):
-					
-					self.parameters = final_params
-					self.parameters_json_path = "AI_GENERATED"
-					
-					print("\n" + "="*50)
-					print("FINAL PARAMETERS TO BE USED:")
-					print("="*50)
-					print_all_parameters(self.parameters)
-					
-					# Ask if user wants to save
-					save = self.m.input_yesno("\nSave these parameters to file?", True)
-					if save:
-						# Create filename from prompt
-						safe_prompt = "".join(c for c in prompt if c.isalnum() or c in (' ', '-', '_')).strip()
-						safe_prompt = safe_prompt.replace(' ', '_')[:30]
-						filename = f"ai_generated_{safe_prompt}.json"
-						
-						# Ensure the directory exists
-						os.makedirs("adsynth/experiment_params", exist_ok=True)
-						filepath = f"adsynth/experiment_params/{filename}"
-						
-						with open(filepath, 'w') as f:
-							json.dump(final_params, f, indent=4)
-						print(f"Parameters saved to {filepath}")
-					
-					print("\n✅ Parameters generated and loaded successfully!")
-					
-				else:
-					print("\nGenerated parameters invalid (missing users or computers).")
-					print("Please check your organization description and try again.")
-					print("Keeping current parameters.")
-					
-			else:
-				print("\nFailed to generate parameters.")
-				print("Possible issues:")
-				print("- Check Azure AI configuration in .env file")
-				print("- Verify API key and endpoint are correct")
-				print("- Check internet connectivity")
-				print("Keeping current parameters.")
-				
-		except Exception as e:
-			print(f"\nError occurred: {e}")
-			print("This might be due to:")
-			print("- Missing or incorrect Azure OpenAI credentials")
-			print("- Network connectivity issues")
-			print("- API quota exceeded")
-			print("Keeping current parameters.")
+        # Print Operators and Server Operators can log into Domain Controllers
+        # Idea Ref: Microsoft, https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-groups
+        print("Print Operators and Server Operators can log into Domain Controllers")
+        create_dc_sessions(domain_controllers, server_operators, print_operators) # O(num of Domain Controllers)
+    
+        
+        # -------------------------------------------------------------
+        # Generate non-ACL Permissions
+        print("Generating non-ACL permissions")
+        create_control_management_permissions(self.domain, nTiers, False, self.parameters, convert_to_digraph)
+        
+        print("Generating misconfigured non-ACL permissions on individuals")
+        create_misconfig_permissions_on_individuals(nTiers, ADMIN_USERS, ENABLED_USERS, self.level, self.parameters, len(enabled_users) + len(admin))
+        
+        print("Generating misconfigured permissions on sets - From groups to OUs")
+        num_local_admin_groups = sum(len(subarray) for subarray in LOCAL_ADMINS)
+        create_misconfig_permissions_on_groups(self.domain, nTiers, self.level, self.parameters, num_local_admin_groups)     
+
+        print("Generating misconfigured membership - Group Nesting")
+        create_misconfig_group_nesting(self.domain, nTiers, self.level, self.parameters, num_regular_groups)
+
+        # -------------------------------------------------------------
+        #  Generate ACL Permissions, including genericall, genericwrite, writeowner, ....
+        print("Creating ACLs permissions")
+        create_control_management_permissions(self.domain, nTiers, True, self.parameters, convert_to_digraph)
+
+        # -------------------------------------------------------------
+        print("Adding Admin rights")
+        assign_administration_to_admin_principals(self.domain, nTiers, convert_to_digraph)
+        
+        print("Adding Local Admin rights")
+        assign_local_admin_rights(self.domain, nTiers, self.parameters, convert_to_digraph) 
+
+        
+        # -------------------------------------------------------------
+        # Default ACLs
+        # Ref: ADSimulator
+        create_default_AllExtendedRights(self.domain, nTiers, convert_to_digraph) # Ref: ADSimulator 
+        create_default_GenericWrite(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
+        create_default_owns(self.domain, convert_to_digraph) # Ref: ADSimulator
+        create_default_write_dacl_owner(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
+        create_default_GenericAll(self.domain, nTiers, self.parameters, convert_to_digraph) # Ref: ADSimulator
+
+        
+        # -------------------------------------------------------------
+        # Kerberoastable users
+        print("Creating Kerberoastable users")
+        create_kerberoastable_users(nTiers, self.parameters) # O(nUsers * perc of Kerberoastable)
+        
+        num_nodes = len(NODES)
+        num_edges = len(dict_edges)
+        print("Num of nodes = ", len(NODES))
+        print("Num of edges = ", len(dict_edges))
+
+        try:
+            print("Graph density = ", round(num_edges / (num_nodes * (num_nodes - 1)), 5))
+        except:
+            pass
+
+        for i in NODE_GROUPS:
+            print("Number of ", i, " = ", len(NODE_GROUPS[i]))
+        
+        perc_misconfig_sessions = get_perc_param_value("perc_misconfig_sessions", "Low", self.parameters) / 100
+        num_misconfig = int(perc_misconfig_sessions * (len(enabled_users) + len(admin)))
+        print(f"Number of regular users = {len(enabled_users) + len(admin)} --- Num misconfig sessions = {num_misconfig}")
+
+        perc_misconfig_permissions = get_perc_param_value("perc_misconfig_permissions", "Low", self.parameters) / 100
+        num_misconfig = int(perc_misconfig_permissions * (len(enabled_users) + len(admin)))
+        print(f"Number of regular users = {len(enabled_users) + len(admin)} --- Num misconfig permissions = {num_misconfig}")
+
+        print("Dump to JSON file")
+        current_datetime = datetime.now()
+        # Format the date and time to include seconds
+        filename = current_datetime.strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
+        
+        with open(f"generated_datasets/{filename}.json", "w") as f:
+            for obj in NODES:
+                obj["type"] = "node"
+                # Use json.dumps() to convert the object to a JSON string without square brackets
+                json_str = json.dumps(obj, separators=(',', ':'))
+                # Write the JSON string to the file with a newline character
+                f.write(json_str + '\n')
+
+        # Open the file in append mode
+        with open(f"generated_datasets/{filename}.json", 'a') as f:
+            for obj in EDGES:
+                # Use json.dumps() to convert the object to a JSON string without square brackets
+                json_str = json.dumps(obj, separators=(',', ':'))
+                # Write the JSON string to the file with a newline character
+                f.write(json_str + '\n')
+        
+        self.dbname = filename
+        # ===============================================
+        
+        end_ = timer()
+        print("Execution time = ", end_ - start_)
+
+        path = f"{os.getcwd()}/generated_datasets/{filename}.json"
+        query = f"PROFILE CALL apoc.periodic.iterate(\"CALL apoc.import.json('{path}')\", \"RETURN 1\", {{batchSize:1000}})"
+        # session.run(query)
+        # session.close()
+
+        print("Database Generation Finished!")
+
+
+    def generate_data_azure(self): 
+        start_ = timer()
+
+        seed_number = get_single_int_param_value("seed", self.parameters)
+        if seed_number > 0:
+            random.seed(seed_number)
+
+        # Reset database
+        reset_DB()
+
+        # Generate tenant
+        print(f"Initiating Azure AD tenant - {self.domain}")
+        tenant_id = az_create_tenant(self.domain)  # Reuse domain as tenant name
+
+        # ===============================================
+        # Create tenant's Azure subscription instance(s)
+        print("Creating Azure subscriptions")
+        subscriptions = az_create_subscriptions(self.domain, tenant_id, self.parameters)
+
+        # ===============================================
+        # Create the roles
+        print("Creating roles")
+        roles = az_create_roles(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create users, including default system users
+        print("Creating users")
+        users = az_create_users(self.domain, tenant_id, roles, self.first_names, self.last_names, self.parameters)
+
+        # ===============================================
+        # Create groups
+        print("Creating groups")
+        groups = az_create_groups(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create management groups
+        print("Creating management groups")
+        management_groups = az_create_management_groups(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Create service principals
+        print("Creating service principals")
+        service_principals = az_create_service_principals(tenant_id, self.parameters)
+
+        # ===============================================
+        # Create applications
+        print("Creating applications")
+        applications = az_create_applications(tenant_id, service_principals, self.parameters)
+
+        # ===============================================
+        # Create key vaults
+        print("Creating key vaults")
+        key_vaults = az_create_key_vaults(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Create VMs
+        print("Creating VMs")
+        vms = az_create_vms(tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Assign group memberships
+        print("Assigning group memberships")
+        az_assign_group_memberships(groups, users, self.parameters)
+
+        # ===============================================
+        # Assign roles
+        print("Assigning roles")
+        az_assign_roles(users, groups, service_principals, roles, tenant_id, subscriptions, self.parameters)
+
+        # ===============================================
+        # Generate misconfigured permissions (permission-related edge types)
+        print("Generating misconfigured permissions")
+        az_create_permissions(users, groups, service_principals, key_vaults, vms, self.parameters)
+
+        # ===============================================
+        # Export to JSON
+        print("Exporting to JSON file")
+        current_datetime = datetime.now()
+        filename = current_datetime.strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
+        with open(f"generated_datasets/{filename}.json", "w") as f:
+            for obj in NODES:
+                obj["type"] = "node"
+                json_str = json.dumps(obj, separators=(',', ':'))
+                f.write(json_str + '\n')
+        with open(f"generated_datasets/{filename}.json", 'a') as f:
+            for obj in EDGES:
+                json_str = json.dumps(obj, separators=(',', ':'))
+                f.write(json_str + '\n')
+        self.dbname = filename
+
+        # ===============================================
+        # Print statistics
+        print("Num of nodes =", len(NODES))
+        print("Num of edges =", len(EDGES))
+        try:
+            print("Graph density =", round(len(EDGES) / (len(NODES) * (len(NODES) - 1)), 5))
+        except:
+            pass
+        for node_type in NODE_GROUPS:
+            print(f"Number of {node_type} =", len(NODE_GROUPS[node_type]))
+
+        end_ = timer()
+        print("Execution time =", end_ - start_)
+        print("Azure AD Database Generation Finished!")
+
+
+    def write_json(self, session):
+        json_path = os.getcwd() + "/" + self.json_file_name
+        query = "CALL apoc.export.json.all('" + json_path + "',{useTypes:true})"
+        session.run(query)
+        print("Graph exported in", json_path)

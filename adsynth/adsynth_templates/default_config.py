@@ -1,5 +1,7 @@
 # Ideas are from ADSimulator
 DEFAULT_CONFIGURATIONS = {
+
+    # On-prem parameters ---------------------------------
     "Domain": {
         "functionalLevelProbability": {
             "2008": 4,
@@ -61,7 +63,7 @@ DEFAULT_CONFIGURATIONS = {
         "sidhistory": 10,
         "unconstraineddelegation": 20,
         "savedcredentials": 40,
-        "Kerberoastable" : [3, 5],
+        "Kerberoastable": [3, 5],
         "sessionsPercentages": [10, 10, 10],
         "priority_session_weight": 3,
         "perc_special_roles": 10
@@ -77,7 +79,7 @@ DEFAULT_CONFIGURATIONS = {
         "nResourcesThresholds": [20, 50],
         "nLocalAdminsPerDepartment": [5, 10],
         "nOUsPerLocalAdmins": [3, 5],
-        "nGroupsPerUsers": [3,5]
+        "nGroupsPerUsers": [3, 5]
     },
     "GPO": {
         "nGPOs": 170,
@@ -103,20 +105,20 @@ DEFAULT_CONFIGURATIONS = {
             "ExecuteDCOM": 25,
             "AllowedToDelegate": 25,
             "ReadLAPSPassword": 25
-        }        
+        }
     },
     "perc_misconfig_sessions": {
-        "Low": 10, 
+        "Low": 10,
         "High": 1,
         "Customized": 10
     },
     "perc_misconfig_permissions": {
-        "Low": 10, 
+        "Low": 10,
         "High": 1,
         "Customized": 10
     },
     "perc_misconfig_permissions_on_groups": {
-        "Low": 100, 
+        "Low": 100,
         "High": 80,
         "Customized": 80
     },
@@ -148,9 +150,61 @@ DEFAULT_CONFIGURATIONS = {
     },
     "nLocations": 3,
     "convert_to_directed_graphs": 0,
-    "seed": 1
-}
+    "seed": 1,
 
+
+    # AZURE PARAMETERS ----------------------------------
+    "AZTenant": {
+        "nTenants": 1
+    },
+    "AZSubscription": {
+        "nSubscriptions": 1
+    },
+    "AZUser": {
+        "nUsers": 50,
+        "enabled": 90
+    },
+    "AZGroup": {
+        "nGroups": 10,
+        "nDefaultGroups": 2,  # All Users, Global Admins
+        "nMembersPerGroup": [1, 10]
+    },
+    "AZServicePrincipal": {
+        "nServicePrincipals": 5
+    },
+    "AZApp": {
+        "nApplications": 5,
+        "nDefaultApplications": 1,  # Azure Portal
+        "spAssignmentProbability": 80
+    },
+    "AZRole": {
+        "nRoles": 3,
+        "defaultRoles": ["Global Administrator", "Contributor", "Reader"],
+        "assignChanceUsers": 25,
+        "assignChanceGroups": 30,
+        "assignChanceServicePrincipals": 100
+    },
+    "AZManagementGroup": {
+        "nManagementGroups": 2,
+        "subscriptionsPerGroup": [1, 3]
+    },
+    "AZKeyVault": {
+        "nKeyVaults": 3,
+        "accessPolicyProbability": 20
+    },
+    "AZVM": {
+        "nVMs": 5,
+        "enabled": 90
+    },
+    "AZMisconfig": {
+        "overprivileged_users": 10,
+        "misconfig_group_members": 5,
+        "reset_password": 5,
+        "add_member": 5,
+        "add_secret": 5,
+        "owns_resource": 10
+    }
+}
 
 def get_complementary_value(value):
     return 100 - value
