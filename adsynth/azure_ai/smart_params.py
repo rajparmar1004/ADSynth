@@ -31,190 +31,297 @@ class SmartParameterGenerator:
         )
         self.deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "turbo-2024-04-09")
     
+    def validate_os_probabilities(self, os_dict):
+        """Ensure OS probabilities sum to exactly 100%"""
+        total = sum(os_dict.values())
+        if abs(total - 100.0) > 0.1:  # Allow 0.1% tolerance
+            # Proportionally adjust all values
+            for key in os_dict:
+                os_dict[key] = round((os_dict[key] * 100.0 / total), 1)
+        return os_dict
+    
+    def validate_and_fix_parameters(self, params):
+        """Apply validation and fixes to generated parameters"""
+        try:
+            # Fix Domain Controller OS probabilities
+            if "DC" in params and "osProbability" in params["DC"]:
+                params["DC"]["osProbability"] = self.validate_os_probabilities(params["DC"]["osProbability"])
+            
+            # Fix Computer OS probabilities
+            if "Computer" in params and "osProbability" in params["Computer"]:
+                params["Computer"]["osProbability"] = self.validate_os_probabilities(params["Computer"]["osProbability"])
+            
+            # Fix Domain functional level probabilities
+            if "Domain" in params and "functionalLevelProbability" in params["Domain"]:
+                params["Domain"]["functionalLevelProbability"] = self.validate_os_probabilities(params["Domain"]["functionalLevelProbability"])
+            
+            # Ensure session percentages follow scaling rules
+            n_users = params.get("User", {}).get("nUsers", 0)
+            if n_users > 0:
+                if n_users <= 200:
+                    correct_sessions = [2.0, 2.0, 2.0]
+                elif n_users <= 500:
+                    correct_sessions = [1.5, 1.5, 1.5]
+                elif n_users <= 1000:
+                    correct_sessions = [1.1, 1.1, 1.1]
+                elif n_users <= 2000:
+                    correct_sessions = [0.9, 0.9, 0.9]
+                elif n_users <= 5000:
+                    correct_sessions = [0.6, 0.6, 0.6]
+                else:
+                    correct_sessions = [0.21, 0.21, 0.21]
+                
+                if "User" in params:
+                    params["User"]["sessionsPercentages"] = correct_sessions
+            
+            # Clean up misconfig arrays (ensure single values, not arrays)
+            misconfig_keys = [
+                "perc_misconfig_sessions", "perc_misconfig_permissions",
+                "perc_misconfig_permissions_on_groups", "perc_misconfig_nesting_groups"
+            ]
+            for key in misconfig_keys:
+                if key in params:
+                    for subkey in ["Customized", "Low", "High"]:
+                        if subkey in params[key] and isinstance(params[key][subkey], list):
+                            params[key][subkey] = params[key][subkey][0] if params[key][subkey] else 0
+            
+            return params
+            
+        except Exception as e:
+            print(f"Validation error: {e}")
+            return params
+    
     def generate_parameters(self, user_prompt):
         
         system_prompt = f"""
         You are an expert Active Directory security consultant. Generate COMPLETE ADSynth parameters in the EXACT format used by the system.
 
-        CRITICAL SIZE ACCURACY:
-        When user specifies employee/user count, match it EXACTLY:
-        - "200 employees" → nUsers: 200
-        - "1000 employees" → nUsers: 1000  
-        - "5000 employees" → nUsers: 5000
-        - "15000 employees" → nUsers: 15000
-        
-        Do NOT deviate from specified user counts. This is the most important requirement.
+        CRITICAL REQUIREMENTS:
+        1. **EXACT USER COUNT MATCHING**: When user specifies employee/user count, match it EXACTLY
+        2. **OS PROBABILITY VALIDATION**: ALL OS probability dictionaries MUST sum to exactly 100%  
+        3. **SECURITY LEVEL ACCURACY**: Misconfig percentages must reflect stated security posture
+        4. **COMPUTER RATIO LOGIC**: Follow industry-appropriate computer-to-user ratios
+        5. **SESSION SCALING**: Session percentages must decrease as organization size increases
 
-        ORGANIZATION SIZE PATTERNS:
-        - Small (1k): 500-650 users, 150-300 computers
-        - Medium (5k): 1800-2000 users, 1600 computers  
-        - Large (10k): 3300 users, 3300 computers
-        - Enterprise (50k): 15000-16600 users, 16600-25000 computers
-        - Mega (100k): 33300+ users, 33300-35000 computers
+        **USER COUNT ACCURACY (MOST CRITICAL):**
+        - "200 employees" → nUsers: 200 (EXACTLY)
+        - "1000 employees" → nUsers: 1000 (EXACTLY)  
+        - "5000 employees" → nUsers: 5000 (EXACTLY)
+        - "15000 employees" → nUsers: 15000 (EXACTLY)
+        
+        **COMPUTER-TO-USER RATIOS BY INDUSTRY:**
+        - Office/Professional/Government: 0.8-1.2 computers per user
+        - Manufacturing/Industrial: 0.3-0.6 computers per user  
+        - Healthcare: 0.6-1.0 computers per user
+        - Engineering/Tech: 0.9-1.3 computers per user
+        - Retail: 0.3-0.8 computers per user
+        - If user specifies exact ratio (e.g., "1:1"), match exactly
+
+        **ORGANIZATION SIZE PATTERNS:**
+        - Small (50-500): 0.6-1.0 computer ratio, higher session %
+        - Medium (500-2000): 0.7-1.1 computer ratio, medium session %  
+        - Large (2000-10000): 0.8-1.2 computer ratio, lower session %
+        - Enterprise (10000+): 0.9-1.3 computer ratio, very low session %
+
+        **SESSION PERCENTAGE SCALING (MANDATORY PATTERN):**
+        - 50-200 users: [2.0, 2.0, 2.0]
+        - 201-500 users: [1.5, 1.5, 1.5] 
+        - 501-1000 users: [1.1, 1.1, 1.1]
+        - 1001-2000 users: [0.9, 0.9, 0.9]
+        - 2001-5000 users: [0.6, 0.6, 0.6]
+        - 5000+ users: [0.21, 0.21, 0.21]
+
+        **RESOURCE THRESHOLDS BY SIZE:**
+        - Small (50-500): [3, 8]
+        - Medium (500-2000): [80, 110] 
+        - Large (2000-10000): [200, 210]
+        - Enterprise (10000+): [500, 1100]
+
+        **SECURITY LEVEL PATTERNS:**
+
+        **MAXIMUM/HIGH SECURITY (Government, Military, Financial, Healthcare):**
+        - perc_misconfig_sessions: 0.01-0.05% (Customized/Low), 0.1% (High)
+        - perc_misconfig_permissions: 0.01-0.05% (Customized/Low), 0.1% (High)
+        - perc_misconfig_permissions_on_groups: 0% (Customized/Low), 0.1% (High)  
+        - perc_misconfig_nesting_groups: 0-0.1% (Customized/Low), 0.1% (High)
+        - Windows 10 Enterprise: 60-85%
+        - Server 2016 combined: 60-90%
+        - LAPS coverage: 35-50%
+        - exploitable: 5-15%
+        - privesc: 5-15%
+        - creddump: 5-15%
+
+        **MEDIUM SECURITY (Standard Enterprise):**
+        - perc_misconfig_sessions: 0.1-2% (Customized/Low), 5% (High)
+        - perc_misconfig_permissions: 0.1-2% (Customized/Low), 5% (High)
+        - perc_misconfig_permissions_on_groups: 0% (Customized/Low), 100% (High)
+        - perc_misconfig_nesting_groups: 0-10% (Customized/Low), 20% (High)
+        - Windows 10 Enterprise: 40-65%
+        - Server 2016 combined: 40-70%
+        - LAPS coverage: 20-35%
+        - exploitable: 20-35%
+
+        **BASIC/LOW SECURITY (Small business, budget constraints, minimal IT):**
+        - perc_misconfig_sessions: 25-50% (Customized/Low), 5% (High)
+        - perc_misconfig_permissions: 25-50% (Customized/Low), 5% (High)
+        - perc_misconfig_permissions_on_groups: 20-40% (Customized/Low), 100% (High)
+        - perc_misconfig_nesting_groups: 20-40% (Customized/Low), 20% (High)
+        - Windows 10 Enterprise: 20-40%
+        - Server 2016 combined: 35-55%
+        - LAPS coverage: 5-20%
+        - exploitable: 35-50%
+        - Higher legacy system percentages (XP: 3-5%, Win7: 15-25%)
 
         **HEALTHCARE SPECIFIC ADJUSTMENTS:**
-        - Higher Windows 10 Enterprise: 60-80%
-        - Higher Server 2016: 60-80% 
-        - Better LAPS coverage: 25-40%
-        - Lower legacy OS percentages
-        - Very low misconfig percentages (0.02-0.1%)
-        
-        **SESSION PERCENTAGES BY SIZE:**
-        - Small (1k): [2, 2, 2] or [0.2, 0.2, 0.2]  
-        - Medium (5k): [0.9, 0.9, 0.9] or [1.1, 1.1, 1.1]
-        - Large (10k): [0.6, 0.6, 0.6] or [0.9, 0.9, 0.9]
-        - Enterprise (50k): [0.09, 0.09, 0.09] or [0.21, 0.21, 0.21]
-        - Mega (100k): [0.09, 0.09, 0.09] or [0.11, 0.11, 0.11]
-        
-        **RESOURCE THRESHOLDS BY SIZE:**
-        - Small (1k): [3, 8]
-        - Medium (5k): [80, 110] 
-        - Large (10k): [200, 210]
-        - Enterprise (50k): [500, 1100]
-        - Mega (100k): [1900, 2100]
+        - Treat as HIGH SECURITY by default
+        - Windows 10 Enterprise: 60-80%
+        - Server 2016 combined: 60-80% 
+        - LAPS coverage: 35-50%
+        - Very low misconfig percentages (0.01-0.1%)
+        - Minimal legacy systems
 
-        SECURITY LEVEL PATTERNS:
-        **SECURE Organizations:**
-        - misconfig_sessions: 0.02-4% (very low)
-        - misconfig_permissions: 0.03-4% (very low)
-        - misconfig_permissions_on_groups: 0%
-        - misconfig_nesting_groups: 0-20%
-        - Admin_Percentage: 10-30%
-        - Modern OS emphasis (Server 2016: 25-50%)
+        **BUDGET CONSTRAINT ADJUSTMENTS:**
+        When "minimal IT budget", "budget constraints", "basic security" mentioned:
+        - Reduce Windows 10 Enterprise by 20-30%
+        - Reduce Server 2016 by 20-30%
+        - Increase Windows 7/XP by 10-20%
+        - Increase older server OS percentages
+        - Reduce LAPS coverage significantly
+        - Increase all misconfig rates by 15-25%
 
-        **VULNERABLE Organizations:**
-        - misconfig_sessions: 30-86% (very high)
-        - misconfig_permissions: 30-86% (very high) 
-        - misconfig_permissions_on_groups: 30-50%
-        - misconfig_nesting_groups: 10-50%
-        - Admin_Percentage: 10-20%
-        - More legacy systems
+        **VALIDATION RULES:**
+        1. ALL OS probability dictionaries MUST sum to exactly 100.0%
+        2. If they don't, proportionally adjust all values: value_new = (value_old * 100 / total_sum)
+        3. Round to 1 decimal place
+        4. User count must EXACTLY match specification
+        5. Computer ratio must match industry type or explicit requirements
+        6. Session percentages must follow the mandatory scaling pattern above
 
-        GENERATE THE COMPLETE JSON with ALL required sections. Use this EXACT structure:
+        GENERATE THE COMPLETE JSON with ALL required sections:
 
         {{
             "Domain": {{
                 "functionalLevelProbability": {{
-                    "2008": 4,
-                    "2008 R2": 5,
-                    "2012": 10,
-                    "2012 R2": 30,
-                    "2016": 50,
-                    "Unknown": 1
+                    "2008": [adjust based on security level],
+                    "2008 R2": [adjust based on security level],
+                    "2012": [adjust based on security level],
+                    "2012 R2": [adjust based on security level],
+                    "2016": [adjust based on security level - higher for secure orgs],
+                    "Unknown": [adjust based on security level]
                 }}
             }},
             "Computer": {{
-                "nComputers": [calculate based on size],
-                "enabled": 80,
-                "haslaps": 10,
-                "unconstraineddelegation": 10,
+                "nComputers": [calculate based on industry and size],
+                "enabled": [80-90 for secure, 70-80 for basic],
+                "haslaps": [35-50 for secure, 5-20 for basic],
+                "unconstraineddelegation": [5-10 for secure, 10-15 for basic],
                 "osProbability": {{
-                    "Windows XP Professional Service Pack 3": 3,
-                    "Windows 7 Professional Service Pack 1": 7,
-                    "Windows 7 Ultimate Service Pack 1": 5,
-                    "Windows 7 Enterprise Service Pack 1": 15,
-                    "Windows 10 Pro": 30,
-                    "Windows 10 Enterprise": 40
+                    "Windows XP Professional Service Pack 3": [0-1 for secure, 3-5 for basic],
+                    "Windows 7 Professional Service Pack 1": [2-5 for secure, 7-15 for basic],
+                    "Windows 7 Ultimate Service Pack 1": [1-3 for secure, 5-10 for basic],
+                    "Windows 7 Enterprise Service Pack 1": [5-10 for secure, 15-25 for basic],
+                    "Windows 10 Pro": [15-25 for secure, 25-35 for basic],
+                    "Windows 10 Enterprise": [60-85 for secure, 20-40 for basic]
                 }},
-                "privesc": 30,
-                "creddump": 40,
-                "exploitable": 40,
+                "privesc": [5-15 for secure, 30-50 for basic],
+                "creddump": [5-15 for secure, 40-50 for basic],
+                "exploitable": [5-15 for secure, 35-50 for basic],
                 "computerProbability": {{
-                    "PAW": 20,
-                    "Server": 20,
-                    "Workstation": 60
+                    "PAW": [20-30 for secure, 10-20 for basic],
+                    "Server": [20-30],
+                    "Workstation": [45-60]
                 }}
             }},
             "DC": {{
-                "enabled": 90,
-                "haslaps": 10,
+                "enabled": [95 for secure, 85-90 for basic],
+                "haslaps": [35-50 for secure, 10-25 for basic],
                 "osProbability": {{
-                    "Windows Server 2003 Enterprise Edition": 1,
-                    "Windows Server 2008 Standard": 1,
-                    "Windows Server 2008 Datacenter": 1,
-                    "Windows Server 2008 Enterprise": 1,
-                    "Windows Server 2008 R2 Standard": 2,
-                    "Windows Server 2008 R2 Datacenter": 3,
-                    "Windows Server 2008 R2 Enterprise": 3,
-                    "Windows Server 2012 Standard": 4,
-                    "Windows Server 2012 Datacenter": 4,
-                    "Windows Server 2012 R2 Standard": 10,
-                    "Windows Server 2012 R2 Datacenter": 10,
-                    "Windows Server 2016 Standard": 35,
-                    "Windows Server 2016 Datacenter": 25
+                    "Windows Server 2003 Enterprise Edition": [0 for secure, 0.5-2 for basic],
+                    "Windows Server 2008 Standard": [0-0.5 for secure, 1-3 for basic],
+                    "Windows Server 2008 Datacenter": [0-0.5 for secure, 1-3 for basic],
+                    "Windows Server 2008 Enterprise": [0-0.5 for secure, 1-3 for basic],
+                    "Windows Server 2008 R2 Standard": [0.5-1 for secure, 2-5 for basic],
+                    "Windows Server 2008 R2 Datacenter": [0.5-1.5 for secure, 3-6 for basic],
+                    "Windows Server 2008 R2 Enterprise": [0.5-1.5 for secure, 3-6 for basic],
+                    "Windows Server 2012 Standard": [1-3 for secure, 4-8 for basic],
+                    "Windows Server 2012 Datacenter": [1-3 for secure, 4-8 for basic],
+                    "Windows Server 2012 R2 Standard": [3-8 for secure, 8-15 for basic],
+                    "Windows Server 2012 R2 Datacenter": [3-8 for secure, 8-15 for basic],
+                    "Windows Server 2016 Standard": [30-45 for secure, 25-35 for basic],
+                    "Windows Server 2016 Datacenter": [30-45 for secure, 20-30 for basic]
                 }}
             }},
             "User": {{
-                "nUsers": [calculate based on size],
-                "enabled": 95,
-                "dontreqpreauth": 5,
-                "hasspn": 10,
-                "passwordnotreqd": 5,
-                "pwdneverexpires": 50,
-                "sidhistory": 10,
-                "unconstraineddelegation": 20,
-                "savedcredentials": 40,
-                "Kerberoastable": [3, 5],
-                "sessionsPercentages": [adjust based on size - use format like [0.9, 0.9, 0.9] for 3 tiers],
+                "nUsers": [EXACT match to user specification],
+                "enabled": [98 for secure, 90-95 for basic],
+                "dontreqpreauth": [1-2 for secure, 5-10 for basic],
+                "hasspn": [3-8 for secure, 10-15 for basic],
+                "passwordnotreqd": [1-2 for secure, 5-10 for basic],
+                "pwdneverexpires": [5-15 for secure, 40-60 for basic],
+                "sidhistory": [1-5 for secure, 10-15 for basic],
+                "unconstraineddelegation": [1-5 for secure, 15-25 for basic],
+                "savedcredentials": [5-15 for secure, 35-50 for basic],
+                "Kerberoastable": [[1, 3] for secure, [3, 7] for basic],
+                "sessionsPercentages": [use mandatory scaling pattern above],
                 "priority_session_weight": 1,
-                "perc_special_roles": 10
+                "perc_special_roles": [8-15 for secure, 10-15 for basic]
             }},
             "Group": {{
-                "nestingGroupProbability": 30,
+                "nestingGroupProbability": [5-15 for secure, 25-35 for basic],
                 "departmentProbability": {{
                     "IT": 25,
                     "R&D": 25,
                     "BUSINESS": 25,
                     "HR": 25
                 }},
-                "nResourcesThresholds": [adjust based on size],
+                "nResourcesThresholds": [use size-based pattern above],
                 "nLocalAdminsPerDepartment": [3, 5],
                 "nOUsPerLocalAdmins": [3, 5],
                 "nGroupsPerUsers": [3, 5]
             }},
             "GPO": {{
-                "nGPOs": 30,
-                "exploitable": 30
+                "nGPOs": [35-50 for secure, 25-35 for basic],
+                "exploitable": [5-15 for secure, 25-40 for basic]
             }},
             "ACLs": {{
-                "ACLPrincipalsPercentage": 30,
+                "ACLPrincipalsPercentage": [5-15 for secure, 25-35 for basic],
                 "ACLsProbability": {{
-                    "GenericAll": 10,
-                    "GenericWrite": 15,
-                    "WriteOwner": 15,
-                    "WriteDacl": 15,
-                    "AddMember": 30,
-                    "ForceChangePassword": 15,
-                    "AllExtendedRights": 10
+                    "GenericAll": [0.5-5 for secure, 10-15 for basic],
+                    "GenericWrite": [0.5-8 for secure, 15-20 for basic],
+                    "WriteOwner": [0.5-8 for secure, 15-20 for basic],
+                    "WriteDacl": [0.5-8 for secure, 15-20 for basic],
+                    "AddMember": [1-15 for secure, 25-35 for basic],
+                    "ForceChangePassword": [0.5-8 for secure, 15-20 for basic],
+                    "AllExtendedRights": [0.5-5 for secure, 10-15 for basic]
                 }}
             }},
             "perc_misconfig_sessions": {{
-                "Customized": [set based on security level],
-                "Low": [set based on security level],
-                "High": 5
+                "Customized": [use security level patterns above],
+                "Low": [use security level patterns above],
+                "High": [use security level patterns above]
             }},
             "perc_misconfig_permissions": {{
-                "Customized": [set based on security level],
-                "Low": [set based on security level],
-                "High": 5
+                "Customized": [use security level patterns above],
+                "Low": [use security level patterns above],  
+                "High": [use security level patterns above]
             }},
             "perc_misconfig_permissions_on_groups": {{
-                "Customized": [set based on security level],
-                "Low": [set based on security level],
-                "High": 100
+                "Customized": [use security level patterns above],
+                "Low": [use security level patterns above],
+                "High": [use security level patterns above]
             }},
             "perc_misconfig_nesting_groups": {{
-                "Customized": [set based on security level],
-                "Low": [set based on security level],
-                "High": 20
+                "Customized": [use security level patterns above],
+                "Low": [use security level patterns above],
+                "High": [use security level patterns above]
             }},
             "misconfig_permissions_to_tier_0": {{
                 "allow": 1,
-                "limit": [1 for secure, higher for vulnerable]
+                "limit": [1 for secure, 3-5 for basic]
             }},
             "misconfig_group": {{
-                "acl_ratio": 50,
-                "admin_ratio": 30,
+                "acl_ratio": [1-25 for secure, 40-60 for basic],
+                "admin_ratio": [5-20 for secure, 25-40 for basic],
                 "priority_paws_weight": 3
             }},
             "nTiers": 3,
@@ -222,47 +329,43 @@ class SmartParameterGenerator:
                 "extraServers": []
             }},
             "Admin": {{
-                "service_account": 15,
-                "Admin_Percentage": [set based on security level]
+                "service_account": [5-10 for secure, 15-20 for basic],
+                "Admin_Percentage": [8-15 for secure, 15-25 for basic]
             }},
             "nonACLs": {{
-                "nonACLsPercentage": 10,
+                "nonACLsPercentage": [5-10 for secure, 10-20 for basic],
                 "nonACLsProbability": {{
-                    "CanRDP": 25,
-                    "ExecuteDCOM": 25,
-                    "AllowedToDelegate": 25,
-                    "ReadLAPSPassword": 25
+                    "CanRDP": [5-15 for secure, 25-35 for basic],
+                    "ExecuteDCOM": [5-15 for secure, 25-35 for basic],
+                    "AllowedToDelegate": [5-15 for secure, 25-35 for basic],
+                    "ReadLAPSPassword": [5-15 for secure, 25-35 for basic]
                 }}
             }},
             "nodeMisconfig": {{
                 "admin_regular": 0,
                 "user_comp": 0
             }},
-            "nLocations": 5,
+            "nLocations": [1-3 for secure/small, 5-10 for basic/distributed],
             "convert_to_directed_graphs": 0,
             "seed": 1,
-            "graph_name": "[generate appropriate name]"
+            "graph_name": "[generate appropriate descriptive name]"
         }}
 
-        CRITICAL: For healthcare organizations, enhance security parameters:
-        1. Increase Windows 10 Enterprise to 60-80%
-        2. Increase Server 2016 Datacenter/Standard to 60-80% total
-        3. Increase haslaps to 25-40% 
-        4. Reduce legacy OS percentages significantly
-        5. Keep misconfig percentages very low (0.02-0.1%)
+        **FINAL VALIDATION CHECKLIST:**
+        Before outputting JSON, verify:
+        1. User count EXACTLY matches specification
+        2. ALL OS probability dictionaries sum to 100.0%
+        3. Computer ratio appropriate for industry/size
+        4. Session percentages follow mandatory scaling rules
+        5. Security misconfig percentages align with stated security level
+        6. All required sections present
 
-        INSTRUCTIONS:
-        1. READ THE USER COUNT CAREFULLY - if they say "5000 employees", nUsers MUST be 5000
-        2. Analyze the user prompt to determine organization size and security level
-        3. Generate the COMPLETE JSON with ALL sections above
-        4. Set nUsers to EXACTLY match the specified employee/user count
-        5. Adjust nComputers based on size (typically 0.8-1.2 ratio to users)
-        4. Adjust sessionsPercentages based on size (smaller = higher percentages)
-        5. Adjust nResourcesThresholds based on size
-        6. Set misconfig percentages based on security level (secure = low, vulnerable = high)
-        7. Set Admin_Percentage appropriately
-        8. Generate appropriate graph_name
-        9. Return ONLY the complete JSON, no explanations
+        **INSTRUCTIONS:**
+        1. Analyze user prompt for: organization size, industry, security level, budget constraints
+        2. Apply appropriate patterns from above
+        3. Generate complete JSON with ALL sections
+        4. Validate all probability sums = 100%
+        5. Return ONLY the JSON, no explanations
 
         User request: {user_prompt}
         """
@@ -291,6 +394,9 @@ class SmartParameterGenerator:
             json_str = content[start:end]
             generated_params = json.loads(json_str)
             
+            # Apply validation and fixes
+            generated_params = self.validate_and_fix_parameters(generated_params)
+            
             # Validate that all required sections are present
             required_sections = [
                 "Domain", "Computer", "DC", "User", "Group", "GPO", "ACLs",
@@ -307,30 +413,17 @@ class SmartParameterGenerator:
                 print(f"Missing required sections: {missing_sections}")
                 return None
             
-            # Clean up any arrays that should be single values
-            def clean_misconfig_arrays(params):
-                misconfig_keys = [
-                    "perc_misconfig_sessions", "perc_misconfig_permissions",
-                    "perc_misconfig_permissions_on_groups", "perc_misconfig_nesting_groups"
-                ]
-                for key in misconfig_keys:
-                    if key in params:
-                        for subkey in ["Customized", "Low", "High"]:
-                            if subkey in params[key] and isinstance(params[key][subkey], list):
-                                params[key][subkey] = params[key][subkey][0] if params[key][subkey] else 0
-                return params
-            
-            generated_params = clean_misconfig_arrays(generated_params)
-            
-            # Basic validation of critical values
+            # Validate critical parameters
             n_users = generated_params.get("User", {}).get("nUsers", 0)
             n_computers = generated_params.get("Computer", {}).get("nComputers", 0)
             
             # Ensure values are integers, not lists
             if isinstance(n_users, list):
                 n_users = n_users[0] if n_users else 0
+                generated_params["User"]["nUsers"] = n_users
             if isinstance(n_computers, list):
                 n_computers = n_computers[0] if n_computers else 0
+                generated_params["Computer"]["nComputers"] = n_computers
                 
             if (n_users > 0 and n_computers > 0):
                 return generated_params
