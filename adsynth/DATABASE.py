@@ -174,7 +174,17 @@ NODE_GROUPS = {
     "Group": list(),
     "Domain": list(),
     "OU": list(),
-    "Container": list()
+    "Container": list(),
+    "AZUser": list(),
+    "AZGroup": list(),
+    "AZTenant": list(),
+    "AZSubscription": list(),
+    "AZRole": list(),
+    "AZServicePrincipal": list(),
+    "AZApp": list(),
+    "AZManagementGroup": list(),
+    "AZKeyVault": list(),
+    "AZVM": list()
 }
 
 GPLINK_OUS = []

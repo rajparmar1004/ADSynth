@@ -1073,3 +1073,399 @@ class MainMenu(cmd.Cmd):
 		query = "CALL apoc.export.json.all('" + json_path + "',{useTypes:true})"
 		session.run(query)
 		print("Graph exported in", json_path)
+
+
+	# Add these methods to the MainMenu class in ADSynth.py
+
+	def help_generate_hybrid(self):
+		print("Generate a hybrid environment with both Azure and on-premises Active Directory in sync")
+
+	def do_generate_hybrid(self, args):
+		"""Generate hybrid environment data with Azure and on-premises sync"""
+		print("Generating hybrid environment (Azure + On-premises with sync)")
+		self.generate_data_hybrid()
+
+	def generate_data_hybrid(self):
+		"""Generate a hybrid environment with both on-premises and Azure components"""
+		start_ = timer()
+		
+		# Set seed for reproducibility
+		seed_number = get_single_int_param_value("seed", self.parameters)
+		if seed_number > 0:
+			random.seed(seed_number)
+
+		# Reset database
+		reset_DB()
+		
+		# Initialize Azure node groups first
+		azure_node_types = ["AZUser", "AZGroup", "AZTenant", "AZSubscription", 
+						"AZRole", "AZServicePrincipal", "AZApp", "AZManagementGroup", 
+						"AZKeyVault", "AZVM"]
+		for node_type in azure_node_types:
+			if node_type not in NODE_GROUPS:
+				NODE_GROUPS[node_type] = []
+		
+		print("=== PHASE 1: Generating On-Premises Active Directory ===")
+		
+		# Generate on-premises AD first (simplified version)
+		domain_dn = get_domain_dn(self.domain)
+		nTiers = get_num_tiers(self.parameters)
+		ridcount.extend([1000])
+		
+		# Create domain and basic structure
+		print(f"Creating on-premises domain - {self.domain}")
+		functional_level = create_domain(self.domain, self.base_sid, domain_dn, self.parameters)
+		create_ad_skeleton(self.domain, self.base_sid, self.parameters, nTiers)
+		
+		# Create default groups and users (simplified)
+		create_default_groups(self.domain, self.base_sid, self.old_domain)
+		
+		# Generate on-premises users
+		num_users = get_int_param_value("User", "nUsers", self.parameters)
+		print(f"Creating {num_users} on-premises users")
+		onprem_users, onprem_disabled = generate_users(self.domain, self.base_sid, num_users, 
+													self.current_time, self.first_names, 
+													self.last_names, self.parameters)
+		
+		# Generate on-premises computers
+		num_computers = get_int_param_value("Computer", "nComputers", self.parameters)
+		print(f"Creating {num_computers} on-premises computers")
+		computers, PAW, Servers, Workstations = generate_computers(self.domain, self.base_sid, 
+																num_computers, [], self.current_time, 
+																self.parameters)
+		
+		print("=== PHASE 2: Generating Azure Active Directory ===")
+		
+		# Create Azure tenant manually to ensure proper tracking
+		tenant_id = str(uuid.uuid4()).upper()
+		print(f"Creating Azure tenant - {tenant_id}")
+		
+		# Create tenant node manually using the same pattern as Azure functions
+		tenant_node = {
+			"id": str(len(NODES)),
+			"labels": ["AZTenant"],
+			"properties": {
+				"name": self.domain,
+				"objectid": tenant_id,
+				"displayName": self.domain
+			}
+		}
+		
+		# Add tenant to database
+		tenant_idx = len(NODES)
+		NODES.append(tenant_node)
+		NODE_GROUPS["AZTenant"].append(tenant_idx)
+		DATABASE_ID["objectid"][tenant_id] = tenant_idx
+		
+		# Create Azure subscriptions
+		subscriptions = self.create_simple_azure_subscriptions(tenant_id)
+		
+		# Create Azure roles
+		roles = self.create_simple_azure_roles(tenant_id)
+		
+		# Generate Azure users (subset of on-premises users that are synced)
+		azure_users = self.create_synced_azure_users(onprem_users, tenant_id, roles)
+		
+		# Create Azure groups
+		azure_groups = self.create_simple_azure_groups(tenant_id)
+		
+		print("=== PHASE 3: Creating Sync Relationships ===")
+		
+		# Create sync relationships between on-premises and Azure
+		self.create_sync_relationships(onprem_users[:len(azure_users)], azure_users)
+		
+		# Add some hybrid-specific relationships
+		self.create_hybrid_relationships(onprem_users, azure_users, azure_groups)
+		
+		print("=== PHASE 4: Finalizing Hybrid Environment ===")
+		
+		# Export to JSON
+		print("Exporting hybrid environment to JSON")
+		current_datetime = datetime.now()
+		filename = f"hybrid_{current_datetime.strftime('%Y-%m-%d_%H-%M-%S-%f')[:-3]}"
+		
+		with open(f"generated_datasets/{filename}.json", "w") as f:
+			for obj in NODES:
+				obj["type"] = "node"
+				json_str = json.dumps(obj, separators=(',', ':'))
+				f.write(json_str + '\n')
+		
+		with open(f"generated_datasets/{filename}.json", 'a') as f:
+			for obj in EDGES:
+				obj["type"] = "relationship"
+				json_str = json.dumps(obj, separators=(',', ':'))
+				f.write(json_str + '\n')
+		
+		self.dbname = filename
+		
+		# Print statistics
+		print("=== HYBRID ENVIRONMENT STATISTICS ===")
+		print(f"Total nodes: {len(NODES)}")
+		print(f"Total edges: {len(EDGES)}")
+		print(f"Sync relationships: {len(SYNC_RELATIONSHIPS)}")
+		
+		for node_type in NODE_GROUPS:
+			if NODE_GROUPS[node_type]:
+				print(f"Number of {node_type}: {len(NODE_GROUPS[node_type])}")
+		
+		end_ = timer()
+		print(f"Hybrid environment generation completed in {end_ - start_:.2f} seconds")
+
+	def create_simple_azure_subscriptions(self, tenant_id):
+		"""Create a simple Azure subscription"""
+		subscription_id = str(uuid.uuid4()).upper()
+		subscription_node = {
+			"id": str(len(NODES)),
+			"labels": ["AZSubscription"],
+			"properties": {
+				"name": f"{self.domain}_Subscription_1",
+				"objectid": subscription_id,
+				"tenantid": tenant_id,
+				"subscriptionId": str(uuid.uuid4()).upper()
+			}
+		}
+		
+		# Add to database
+		sub_idx = len(NODES)
+		NODES.append(subscription_node)
+		NODE_GROUPS["AZSubscription"].append(sub_idx)
+		DATABASE_ID["objectid"][subscription_id] = sub_idx
+		
+		# Create tenant relationship
+		tenant_idx = get_node_index(tenant_id, "objectid")
+		if tenant_idx != -1:
+			edge_operation(tenant_idx, sub_idx, "AZContains")
+		
+		return [subscription_id]
+
+	def create_simple_azure_roles(self, tenant_id):
+		"""Create simple Azure roles"""
+		role_names = ["Global Administrator", "Contributor", "Reader"]
+		roles = []
+		
+		for role_name in role_names:
+			role_id = str(uuid.uuid4()).upper()
+			role_node = {
+				"id": str(len(NODES)),
+				"labels": ["AZRole"],
+				"properties": {
+					"name": role_name,
+					"objectid": role_id,
+					"tenantid": tenant_id,
+					"roleTemplateId": str(uuid.uuid4()).upper(),
+					"displayName": role_name
+				}
+			}
+			
+			# Add to database
+			role_idx = len(NODES)
+			NODES.append(role_node)
+			NODE_GROUPS["AZRole"].append(role_idx)
+			DATABASE_ID["objectid"][role_id] = role_idx
+			
+			# Create tenant relationship
+			tenant_idx = get_node_index(tenant_id, "objectid")
+			if tenant_idx != -1:
+				edge_operation(tenant_idx, role_idx, "AZContains")
+			
+			roles.append(role_id)
+		
+		return roles
+
+	def create_simple_azure_groups(self, tenant_id):
+		"""Create simple Azure groups"""
+		group_names = ["All Users", "Global Admins", "IT Department"]
+		groups = []
+		
+		for group_name in group_names:
+			group_id = str(uuid.uuid4()).upper()
+			group_node = {
+				"id": str(len(NODES)),
+				"labels": ["AZGroup"],
+				"properties": {
+					"name": group_name,
+					"objectid": group_id,
+					"tenantid": tenant_id,
+					"displayName": group_name
+				}
+			}
+			
+			# Add to database
+			group_idx = len(NODES)
+			NODES.append(group_node)
+			NODE_GROUPS["AZGroup"].append(group_idx)
+			DATABASE_ID["objectid"][group_id] = group_idx
+			
+			# Create tenant relationship
+			tenant_idx = get_node_index(tenant_id, "objectid")
+			if tenant_idx != -1:
+				edge_operation(tenant_idx, group_idx, "AZContains")
+			
+			groups.append(group_id)
+		
+		return groups
+
+	def create_hybrid_relationships(self, onprem_users, azure_users, azure_groups):
+		"""Create hybrid-specific relationships and permissions"""
+		print("Creating hybrid-specific relationships")
+		
+		if not azure_groups:
+			print("No Azure groups available, skipping hybrid group relationships")
+			return
+		
+		# Some Azure users can manage on-premises resources
+		num_hybrid_admins = min(5, len(azure_users))
+		if num_hybrid_admins > 0:
+			hybrid_admins = random.sample(azure_users, num_hybrid_admins)
+			
+			for admin_id in hybrid_admins:
+				# Azure admin can reset on-premises user passwords (simplified)
+				target_onprem = random.choice(onprem_users)
+				target_idx = get_node_index(target_onprem + "_User", "name")
+				admin_idx = get_node_index(admin_id, "objectid")
+				
+				if target_idx != -1 and admin_idx != -1:
+					edge_operation(admin_idx, target_idx, "ForceChangePassword",
+								["isHybridPermission", "grantedVia"],
+								[True, "Azure AD Privileged Identity Management"])
+		
+		# Some on-premises users have Azure permissions
+		num_onprem_azure_access = min(3, len(onprem_users))
+		if num_onprem_azure_access > 0:
+			onprem_azure_users = random.sample(onprem_users, num_onprem_azure_access)
+			
+			for onprem_user in onprem_azure_users:
+				if onprem_user in SYNC_RELATIONSHIPS:
+					azure_counterpart = SYNC_RELATIONSHIPS[onprem_user]
+					# Give the Azure counterpart some Azure group membership
+					if azure_groups:
+						target_group = random.choice(azure_groups)
+						azure_idx = get_node_index(azure_counterpart, "objectid")
+						group_idx = get_node_index(target_group, "objectid")
+						
+						if azure_idx != -1 and group_idx != -1:
+							edge_operation(azure_idx, group_idx, "AZMemberOf",
+										["grantedViaSync"], [True])
+
+	def create_synced_azure_users(self, onprem_users, tenant_id, roles):
+		"""Create Azure users that are synced from on-premises"""
+		# Sync 70% of on-premises users to Azure (configurable)
+		sync_percentage = 70
+		num_synced = int(len(onprem_users) * sync_percentage / 100)
+		
+		synced_onprem_users = random.sample(onprem_users, num_synced)
+		azure_users = []
+		
+		print(f"Syncing {num_synced} users from on-premises to Azure")
+		
+		for onprem_user in synced_onprem_users:
+			# Extract user info from on-premises user
+			onprem_node_idx = get_node_index(onprem_user + "_User", "name")
+			if onprem_node_idx == -1:
+				continue
+				
+			onprem_node = NODES[onprem_node_idx]
+			
+			# Create corresponding Azure user
+			azure_user_id = str(uuid.uuid4()).upper()
+			display_name = onprem_node["properties"].get("displayname", "Unknown User")
+			
+			# Create UPN based on on-premises name
+			base_name = onprem_user.split("@")[0] if "@" in onprem_user else onprem_user
+			upn = f"{base_name.lower()}@{self.domain.lower()}"
+			
+			# Create Azure user node manually
+			azure_node = {
+				"id": str(len(NODES)),
+				"labels": ["AZUser"],
+				"properties": {
+					"name": display_name,
+					"userPrincipalName": upn,
+					"objectid": azure_user_id,
+					"tenantid": tenant_id,
+					"enabled": onprem_node["properties"].get("enabled", True),
+					"displayName": display_name,
+					"syncedFromOnPremises": True,
+					"onPremisesUserPrincipalName": onprem_user
+				}
+			}
+			
+			# Add to NODES and update tracking
+			azure_node_idx = len(NODES)
+			NODES.append(azure_node)
+			NODE_GROUPS["AZUser"].append(azure_node_idx)
+			DATABASE_ID["objectid"][azure_user_id] = azure_node_idx
+			
+			# Create tenant relationship - check if tenant exists first
+			tenant_idx = get_node_index(tenant_id, "objectid")
+			if tenant_idx != -1:
+				edge_operation(tenant_idx, azure_node_idx, "AZContains")
+			else:
+				print(f"Warning: Tenant {tenant_id} not found, skipping tenant relationship")
+			
+			azure_users.append(azure_user_id)
+			
+			# Store sync relationship
+			SYNC_RELATIONSHIPS[onprem_user] = azure_user_id
+			HYBRID_OBJECTS[onprem_user] = {
+				"onprem_id": onprem_user,
+				"azure_id": azure_user_id,
+				"type": "User"
+			}
+		
+		return azure_users
+
+	def create_sync_relationships(self, onprem_users, azure_users):
+		"""Create explicit sync relationships between on-premises and Azure objects"""
+		print("Creating sync relationships between on-premises and Azure")
+		
+		for i, (onprem_user, azure_user) in enumerate(zip(onprem_users, azure_users)):
+			# Find the actual node indices
+			onprem_idx = get_node_index(onprem_user + "_User", "name")
+			azure_idx = get_node_index(azure_user, "objectid")
+			
+			if onprem_idx != -1 and azure_idx != -1:
+				# Create bidirectional sync relationship using edge_operation
+				edge_operation(onprem_idx, azure_idx, "SyncedTo", 
+							["syncType", "syncDirection"], 
+							["AADConnect", "OnPremToAzure"])
+				
+				edge_operation(azure_idx, onprem_idx, "SyncedFrom", 
+							["syncType", "syncDirection"], 
+							["AADConnect", "AzureToOnPrem"])
+
+	def create_hybrid_relationships(self, onprem_users, azure_users, azure_groups):
+		"""Create hybrid-specific relationships and permissions"""
+		print("Creating hybrid-specific relationships")
+		
+		# Some Azure users can manage on-premises resources
+		num_hybrid_admins = min(5, len(azure_users))
+		hybrid_admins = random.sample(azure_users, num_hybrid_admins)
+		
+		for admin_id in hybrid_admins:
+			# Azure admin can reset on-premises user passwords (simplified)
+			target_onprem = random.choice(onprem_users)
+			target_idx = get_node_index(target_onprem + "_User", "name")
+			admin_idx = get_node_index(admin_id, "objectid")
+			
+			if target_idx != -1 and admin_idx != -1:
+				edge_operation(admin_idx, target_idx, "ForceChangePassword",
+							["isHybridPermission", "grantedVia"],
+							[True, "Azure AD Privileged Identity Management"])
+		
+		# Some on-premises users have Azure permissions
+		num_onprem_azure_access = min(3, len(onprem_users))
+		onprem_azure_users = random.sample(onprem_users, num_onprem_azure_access)
+		
+		for onprem_user in onprem_azure_users:
+			if onprem_user in SYNC_RELATIONSHIPS:
+				azure_counterpart = SYNC_RELATIONSHIPS[onprem_user]
+				# Give the Azure counterpart some Azure group membership
+				if azure_groups:
+					target_group = random.choice(azure_groups)
+					azure_idx = get_node_index(azure_counterpart, "objectid")
+					group_idx = get_node_index(target_group, "objectid")
+					
+					if azure_idx != -1 and group_idx != -1:
+						edge_operation(azure_idx, group_idx, "AZMemberOf",
+									["grantedViaSync"], [True])
