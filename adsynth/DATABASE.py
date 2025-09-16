@@ -117,7 +117,12 @@ def edge_operation(start_index, end_index, relationship_type, props = [], values
 
     # Update edge
     for i in range(len(props)):
-        EDGES[EDGES_index]["properties"][props[i]] = values[i]
+        # Flatten complex property values to JSON strings for Neo4j compatibility
+        if isinstance(values[i], (dict, list)):
+            import json
+            EDGES[EDGES_index]["properties"][props[i]] = json.dumps(values[i])
+        else:
+            EDGES[EDGES_index]["properties"][props[i]] = values[i]
 
 def get_node_index(id_lookup, identifier):
     if id_lookup in DATABASE_ID[identifier]:
@@ -162,6 +167,7 @@ AD_NODE_ADMIN = {
 AD_EDGE = {
     "type": "relationship",
     "id": "",
+    "label": "",
     "properties": {},
     "start": {},
     "end": {}
