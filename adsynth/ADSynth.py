@@ -564,61 +564,134 @@ class MainMenu(cmd.Cmd):
 			self.connected = False
 			print("Database Connection Failed. Check your settings.")
 
-
 	def do_importdb(self, args):
+		"""Import a JSON file to Neo4j using APOC (manual permissions setup required)"""
 		if not self.connected:
-			print("Neo4J connection has not been configured yet. Please proceed 'neo4jconfig' first.")
+			print("Neo4j connection has not been configured yet. Please run 'neo4jconfig' first.")
 			return
-		print("Please input the name of a JSON file in the folder 'generated_datasets' (excluding the file extension). Otherwise, provide the full path to your intended JSON file")
-		print("If you want to import the dataset you have just generated in this terminal, please click Enter")
+
+		print("Please input the name of a JSON file in the folder 'generated_datasets' (excluding the file extension).")
+		print("Or provide the full path to your intended JSON file.")
+		print("If you want to import the dataset you have just generated in this terminal, please press Enter.")
+		
 		dataset_name = input("Dataset to be imported: ")
+		
 		if not dataset_name:
 			if self.dbname is None:
 				print("No dataset generated recently")
 				return
-			path = f"{os.getcwd()}/generated_datasets/{self.dbname}.json"
+			filename = f"{self.dbname}.json"
 		else:
-			path = f"{os.getcwd()}/generated_datasets/{dataset_name}.json"
-			if not os.path.exists(path):
-				path = dataset_name
-				if not os.path.exists(path):
-					print("There is no such file.")
-					return
-		try:        
+			if dataset_name.endswith('.json'):
+				filename = dataset_name
+			else:
+				filename = f"{dataset_name}.json"
+		
+		# Check if file exists in generated_datasets
+		file_path = f"{os.getcwd()}/generated_datasets/{filename}"
+		if not os.path.exists(file_path):
+			print(f"File not found: {file_path}")
+			return
+		
+		try:
 			self.test_db_conn()
-		except:
+			if not self.connected:
+				print("Failed to connect to Neo4j database")
+				return
+		except Exception as e:
+			print(f"Database connection error: {e}")
 			return
 
 		session = self.driver.session()
-
-		try:
-			self.do_cleardb("a")
-			print("========== IMPORT PROCESS ==========")
-	
-			# Read the NDJSON file
-			with open(path, 'r') as f:
-				for line in f:
-					if line.strip():
-						obj = json.loads(line.strip())
-						if obj.get("type") == "node":
-							props = obj.get('properties', {})
-							labels = obj.get('labels', ['Node'])
-							label_str = ':'.join(labels)
-					
-							if props:
-								prop_items = ', '.join([f"{k}: ${k}" for k in props.keys()])
-								cypher = f"CREATE (n:{label_str} {{{prop_items}}})"
-								session.run(cypher, props)
-	 
-			print("Import has finished")
 		
-		except neo4j.exceptions.Neo4jError as e:
-			print(f"Neo4jError occurred: {e}")
+		try:
+			# Clear database first
+			print("Clearing existing database...")
+			self.do_cleardb("")
+			
+			print("========== APOC IMPORT PROCESS ==========")
+			print(f"Importing: {filename}")
+			
+			# Neo4j import directory
+			neo4j_import_dir = "/var/lib/neo4j/import/"
+			target_path = os.path.join(neo4j_import_dir, filename)
+			
+			# Simple copy (assumes permissions are set correctly)
+			import shutil
+			try:
+				shutil.copy2(file_path, target_path)
+				print(f"Copied to: {target_path}")
+			except Exception as e:
+				print(f"Failed to copy file: {e}")
+				print(f"Please manually copy the file:")
+				print(f"sudo cp {file_path} {target_path}")
+				print(f"sudo chmod 644 {target_path}")
+				return
+			
+			# Use APOC with just the filename
+			file_url = f"file:///{filename}"
+			print(f"Loading from: {file_url}")
+			
+			# Import nodes
+			print("Importing nodes...")
+			node_query = f"""
+			CALL apoc.load.json('{file_url}') 
+			YIELD value
+			WITH value
+			WHERE value.type = "node"
+			WITH value.labels as labels, value.properties as props, value.id as nodeId
+			CALL apoc.create.node(labels, apoc.map.setKey(props, 'id', nodeId)) 
+			YIELD node
+			RETURN count(node) as nodeCount
+			"""
+			
+			node_result = session.run(node_query)
+			node_count = node_result.single()['nodeCount']
+			print(f"Created {node_count} nodes")
+			
+			# Import relationships
+			print("Importing relationships...")
+			rel_query = f"""
+			CALL apoc.load.json('{file_url}') 
+			YIELD value
+			WITH value
+			WHERE value.type = "relationship"
+			MATCH (start {{id: value.start.id}}), (end {{id: value.end.id}})
+			CALL apoc.create.relationship(start, value.label, value.properties, end) 
+			YIELD rel
+			RETURN count(rel) as relCount
+			"""
+			
+			rel_result = session.run(rel_query)
+			rel_count = rel_result.single()['relCount']
+			print(f"Created {rel_count} relationships")
+			
+			print("========== IMPORT COMPLETED ==========")
+			print(f"Total nodes: {node_count}")
+			print(f"Total relationships: {rel_count}")
+			
+			# Clean up copied file
+			try:
+				os.remove(target_path)
+				print("Cleaned up temporary file")
+			except:
+				print(f"Note: Temporary file remains at {target_path}")
+				
 		except Exception as e:
-			print(f"An error occurred: {e}")
+			print(f"APOC import failed: {e}")
+			print("Make sure APOC plugin is installed and Neo4j is running")
+			
 		finally:
 			session.close()
 
+	def help_importdb(self):
+		print("Import a JSON file to Neo4j using APOC")
+		print("Usage: importdb [filename]")
+		print("  - Copies file to /var/lib/neo4j/import/")
+		print("  - Requires write permissions to Neo4j import directory")
+		print("  - Run this first to set permissions:")
+		print("    sudo chmod 755 /var/lib/neo4j/import/")
+		print("    sudo chown $USER:$USER /var/lib/neo4j/import/")
 
 	def do_generate(self, args):
 		
@@ -1085,8 +1158,43 @@ class MainMenu(cmd.Cmd):
 		print("Generating hybrid environment (Azure + On-premises with sync)")
 		self.generate_data_hybrid()
 
+
+	def get_node_index(self, identifier, id_type):
+		"""Helper function to get node index by identifier and type"""
+		if id_type in DATABASE_ID and identifier in DATABASE_ID[id_type]:
+			return DATABASE_ID[id_type][identifier]
+		return -1
+
+	def edge_operation(self, source_idx, target_idx, edge_type, prop_names=None, prop_values=None):
+		"""Helper function to create edges with properties"""
+		if source_idx == -1 or target_idx == -1:
+			return
+			
+		edge = {
+			"id": str(len(EDGES)),
+			"type": "relationship",
+			"label": edge_type,
+			"start": {"id": str(source_idx)},
+			"end": {"id": str(target_idx)},
+			"properties": {}
+		}
+		
+		if prop_names and prop_values and len(prop_names) == len(prop_values):
+			for name, value in zip(prop_names, prop_values):
+				edge["properties"][name] = value
+		
+		EDGES.append(edge)
+		
+		# Update dict_edges for tracking
+		edge_key = f"{source_idx}-{target_idx}-{edge_type}"
+		if edge_key not in dict_edges:
+			dict_edges[edge_key] = 1
+
+	# Additionally, you need to modify the generate_data_hybrid method slightly:
+	# Replace the Azure tenant creation section with this:
+
 	def generate_data_hybrid(self):
-		"""Generate a hybrid environment with both on-premises and Azure components"""
+		"""Generate a comprehensive hybrid environment with both on-premises and Azure components"""
 		start_ = timer()
 		
 		# Set seed for reproducibility
@@ -1107,7 +1215,7 @@ class MainMenu(cmd.Cmd):
 		
 		print("=== PHASE 1: Generating On-Premises Active Directory ===")
 		
-		# Generate on-premises AD first (simplified version)
+		# Generate on-premises AD (comprehensive version)
 		domain_dn = get_domain_dn(self.domain)
 		nTiers = get_num_tiers(self.parameters)
 		ridcount.extend([1000])
@@ -1117,70 +1225,239 @@ class MainMenu(cmd.Cmd):
 		functional_level = create_domain(self.domain, self.base_sid, domain_dn, self.parameters)
 		create_ad_skeleton(self.domain, self.base_sid, self.parameters, nTiers)
 		
-		# Create default groups and users (simplified)
+		# Create comprehensive on-premises structure
 		create_default_groups(self.domain, self.base_sid, self.old_domain)
+		create_admin_groups(self.domain, self.base_sid, nTiers)
 		
-		# Generate on-premises users
+		# Create GPOs and OUs
+		ddp = cs(str(uuid.uuid4()), self.base_sid).upper()
+		ddcp = cs(str(uuid.uuid4()), self.base_sid).upper()
+		dcou = cs(str(uuid.uuid4()), self.base_sid).upper()
+		gpos_container = cs(str(uuid.uuid4()), self.base_sid).upper()
+		
+		create_gpos_container(self.domain, domain_dn, gpos_container)
+		create_default_gpos(self.domain, domain_dn, ddp, ddcp)
+		create_domain_controllers_ou(self.domain, domain_dn, dcou)
+		apply_default_gpos(self.domain, ddp, ddcp, dcou)
+		
+		# Create ACLs
+		create_enterprise_admins_acls(self.domain)
+		create_administrators_acls(self.domain)
+		create_domain_admins_acls(self.domain)
+		create_default_dc_groups_acls(self.domain)
+		
+		# Generate Domain Controllers
+		dc_properties_list, domain_controllers = generate_dcs(self.domain, self.base_sid, 
+															domain_dn, dcou, self.current_time, 
+															self.parameters, functional_level)
+		
+		# Apply GPOs to tiers
+		apply_gpos(self.domain, self.base_sid, nTiers)
+		apply_restriction_gpos(self.domain, self.base_sid, self.parameters)
+		place_gpos_in_container(self.domain, gpos_container)
+		
+		# Generate default users
+		generate_guest_user(self.domain, self.base_sid, self.parameters)
+		generate_default_account(self.domain, self.base_sid, self.parameters)
+		generate_administrator(self.domain, self.base_sid, self.parameters)
+		generate_krbtgt_user(self.domain, self.base_sid, self.parameters)
+		link_default_users_to_domain(self.domain, self.base_sid)
+		
+		create_default_users_acls(self.domain, self.base_sid)
+		create_adminstrator_memberships(self.domain)
+		generate_default_member_of(self.domain, self.base_sid, self.old_domain)
+		create_default_groups_acls(self.domain, self.base_sid)
+		
+		# Generate regular users
 		num_users = get_int_param_value("User", "nUsers", self.parameters)
 		print(f"Creating {num_users} on-premises users")
 		onprem_users, onprem_disabled = generate_users(self.domain, self.base_sid, num_users, 
 													self.current_time, self.first_names, 
 													self.last_names, self.parameters)
 		
-		# Generate on-premises computers
+		# Segregate admin and regular users
+		perc_admin = get_perc_param_value("Admin", "Admin_Percentage", self.parameters)
+		all_admins, all_enabled_users = segregate_list(onprem_users, [perc_admin, 100 - perc_admin])
+		
+		misconfig_admin_regular_perc = get_perc_param_value("nodeMisconfig", "admin_regular", self.parameters)
+		if misconfig_admin_regular_perc > 50:
+			misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
+		admin, misconfig_admin = segregate_list(all_admins, [100 - misconfig_admin_regular_perc, misconfig_admin_regular_perc])
+		
+		misconfig_user_comp_perc = get_perc_param_value("nodeMisconfig", "user_comp", self.parameters)
+		if misconfig_admin_regular_perc + misconfig_user_comp_perc > 50:
+			misconfig_admin_regular_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["admin_regular"]
+			misconfig_user_comp_perc = DEFAULT_CONFIGURATIONS["nodeMisconfig"]["user_comp"]
+		enabled_users, misconfig_regular_users, misconfig_users_comps = \
+			segregate_list(all_enabled_users, [100 - misconfig_admin_regular_perc - misconfig_user_comp_perc, 
+											misconfig_admin_regular_perc, misconfig_user_comp_perc])
+		
+		# Generate computers
 		num_computers = get_int_param_value("Computer", "nComputers", self.parameters)
 		print(f"Creating {num_computers} on-premises computers")
 		computers, PAW, Servers, Workstations = generate_computers(self.domain, self.base_sid, 
 																num_computers, [], self.current_time, 
 																self.parameters)
 		
-		print("=== PHASE 2: Generating Azure Active Directory ===")
+		Workstations, misconfig_workstations = segregate_list(Workstations, [100 - misconfig_user_comp_perc, misconfig_user_comp_perc])
+		place_computers_in_tiers(self.domain, self.base_sid, nTiers, self.parameters, PAW, Servers, Workstations, misconfig_users_comps)
 		
-		# Create Azure tenant manually to ensure proper tracking
+		# Place users in tiers
+		server_operators = []
+		print_operators = []
+		place_admin_users_in_tiers(self.domain, self.base_sid, nTiers, admin, misconfig_regular_users, 
+								server_operators, print_operators, self.parameters)
+		place_normal_users_in_tiers(self.domain, enabled_users, onprem_disabled, misconfig_admin, 
+								misconfig_workstations, nTiers)
+		
+		# Create groups and relationships
+		num_regular_groups = create_groups(self.domain, self.base_sid, self.parameters, nTiers)
+		nest_groups(self.domain, self.parameters)
+		it_users = place_users_in_groups(self.domain, nTiers, self.parameters)
+		
+		# Create sessions
+		create_sessions(nTiers, PAW_TIERS, S_TIERS, WS_TIERS, self.parameters)
+		create_misconfig_sessions(nTiers, self.level, self.parameters, len(enabled_users) + len(admin))
+		create_dc_sessions(domain_controllers, server_operators, print_operators)
+		
+		print("=== PHASE 2: Generating Comprehensive Azure Active Directory ===")
+		
+		# Create Azure tenant - FIXED VERSION
+		print(f"Creating Azure tenant for domain - {self.domain}")
 		tenant_id = str(uuid.uuid4()).upper()
-		print(f"Creating Azure tenant - {tenant_id}")
-		
-		# Create tenant node manually using the same pattern as Azure functions
 		tenant_node = {
 			"id": str(len(NODES)),
 			"labels": ["AZTenant"],
 			"properties": {
 				"name": self.domain,
 				"objectid": tenant_id,
-				"displayName": self.domain
+				"displayName": self.domain,
+				"tenantid": tenant_id
 			}
 		}
 		
-		# Add tenant to database
+		# Add tenant to database manually to ensure it's tracked
 		tenant_idx = len(NODES)
 		NODES.append(tenant_node)
 		NODE_GROUPS["AZTenant"].append(tenant_idx)
 		DATABASE_ID["objectid"][tenant_id] = tenant_idx
 		
-		# Create Azure subscriptions
-		subscriptions = self.create_simple_azure_subscriptions(tenant_id)
+		# Create comprehensive Azure infrastructure
+		print("Creating Azure subscriptions")
+		subscriptions = az_create_subscriptions(self.domain, tenant_id, self.parameters)
 		
-		# Create Azure roles
-		roles = self.create_simple_azure_roles(tenant_id)
+		print("Creating Azure roles") 
+		roles = az_create_roles(tenant_id, self.parameters)
 		
-		# Generate Azure users (subset of on-premises users that are synced)
+		print("Creating Azure management groups")
+		management_groups = az_create_management_groups(tenant_id, subscriptions, self.parameters)
+		
+		print("Creating Azure service principals")
+		service_principals = az_create_service_principals(tenant_id, self.parameters)
+		
+		print("Creating Azure applications")
+		applications = az_create_applications(tenant_id, service_principals, self.parameters)
+		
+		print("Creating Azure key vaults")
+		key_vaults = az_create_key_vaults(tenant_id, subscriptions, self.parameters)
+		
+		print("Creating Azure VMs")
+		vms = az_create_vms(tenant_id, subscriptions, self.parameters)
+		
+		print("Creating Azure groups")
+		azure_groups = az_create_groups(tenant_id, self.parameters)
+		
+		print("=== PHASE 3: Creating Synced Azure Users ===")
+		
+		# Create Azure users that are synced from on-premises
 		azure_users = self.create_synced_azure_users(onprem_users, tenant_id, roles)
 		
-		# Create Azure groups
-		azure_groups = self.create_simple_azure_groups(tenant_id)
+		# Add some cloud-only Azure users
+		cloud_only_users = self.create_cloud_only_azure_users(tenant_id, roles)
+		all_azure_users = azure_users + cloud_only_users
 		
-		print("=== PHASE 3: Creating Sync Relationships ===")
+		# Replace the Phase 4 section in your generate_data_hybrid method with this:
+
+		print("=== PHASE 4: Creating Azure Relationships ===")
+
+		# Convert user indices to object IDs for Azure functions
+		azure_user_ids = []
+		for user_idx in all_azure_users:
+			if user_idx < len(NODES):
+				node = NODES[user_idx]
+				if "objectid" in node["properties"]:
+					azure_user_ids.append(node["properties"]["objectid"])
+
+		# Assign group memberships
+		print("Assigning Azure group memberships")
+		if azure_groups and azure_user_ids:
+			try:
+				az_assign_group_memberships(azure_groups, azure_user_ids, self.parameters)
+			except Exception as e:
+				print(f"Warning: Error in group membership assignment: {e}")
+				print("Continuing with hybrid generation...")
+
+		# Assign roles
+		print("Assigning Azure roles")
+		if roles and azure_user_ids:
+			try:
+				az_assign_roles(azure_user_ids, azure_groups, service_principals, roles, 
+							tenant_id, subscriptions, self.parameters)
+			except Exception as e:
+				print(f"Warning: Error in role assignment: {e}")
+				print("Continuing with hybrid generation...")
+
+		# Generate Azure permissions
+		print("Generating Azure permissions")
+		if azure_user_ids:
+			try:
+				az_create_permissions(azure_user_ids, azure_groups, service_principals, 
+									key_vaults, vms, self.parameters)
+			except Exception as e:
+				print(f"Warning: Error in permission creation: {e}")
+				print("Continuing with hybrid generation...")
+		
+		print("=== PHASE 5: Creating Sync Relationships ===")
 		
 		# Create sync relationships between on-premises and Azure
 		self.create_sync_relationships(onprem_users[:len(azure_users)], azure_users)
 		
-		# Add some hybrid-specific relationships
-		self.create_hybrid_relationships(onprem_users, azure_users, azure_groups)
+		# Add hybrid-specific relationships
+		self.create_comprehensive_hybrid_relationships(onprem_users, all_azure_users, azure_groups, 
+													service_principals, key_vaults, vms)
 		
-		print("=== PHASE 4: Finalizing Hybrid Environment ===")
+		print("=== PHASE 6: Finalizing On-Premises Permissions ===")
+		
+		# Complete on-premises permissions and ACLs
+		convert_to_digraph = get_single_int_param_value("convert_to_directed_graphs", self.parameters)
+		
+		create_control_management_permissions(self.domain, nTiers, False, self.parameters, convert_to_digraph)
+		create_misconfig_permissions_on_individuals(nTiers, ADMIN_USERS, ENABLED_USERS, 
+												self.level, self.parameters, len(enabled_users) + len(admin))
+		
+		num_local_admin_groups = sum(len(subarray) for subarray in LOCAL_ADMINS)
+		create_misconfig_permissions_on_groups(self.domain, nTiers, self.level, 
+											self.parameters, num_local_admin_groups)
+		create_misconfig_group_nesting(self.domain, nTiers, self.level, self.parameters, num_regular_groups)
+		
+		# Create ACL permissions
+		create_control_management_permissions(self.domain, nTiers, True, self.parameters, convert_to_digraph)
+		assign_administration_to_admin_principals(self.domain, nTiers, convert_to_digraph)
+		assign_local_admin_rights(self.domain, nTiers, self.parameters, convert_to_digraph)
+		
+		# Default ACLs
+		create_default_AllExtendedRights(self.domain, nTiers, convert_to_digraph)
+		create_default_GenericWrite(self.domain, nTiers, self.parameters, convert_to_digraph)
+		create_default_owns(self.domain, convert_to_digraph)
+		create_default_write_dacl_owner(self.domain, nTiers, self.parameters, convert_to_digraph)
+		create_default_GenericAll(self.domain, nTiers, self.parameters, convert_to_digraph)
+		
+		# Kerberoastable users
+		create_kerberoastable_users(nTiers, self.parameters)
+		
+		print("=== PHASE 7: Export and Statistics ===")
 		
 		# Export to JSON
-		print("Exporting hybrid environment to JSON")
 		current_datetime = datetime.now()
 		filename = f"hybrid_{current_datetime.strftime('%Y-%m-%d_%H-%M-%S-%f')[:-3]}"
 		
@@ -1198,154 +1475,39 @@ class MainMenu(cmd.Cmd):
 		
 		self.dbname = filename
 		
-		# Print statistics
-		print("=== HYBRID ENVIRONMENT STATISTICS ===")
+		# Print comprehensive statistics
+		print("=== COMPREHENSIVE HYBRID ENVIRONMENT STATISTICS ===")
 		print(f"Total nodes: {len(NODES)}")
 		print(f"Total edges: {len(EDGES)}")
 		print(f"Sync relationships: {len(SYNC_RELATIONSHIPS)}")
+		print(f"Hybrid objects: {len(HYBRID_OBJECTS)}")
 		
-		for node_type in NODE_GROUPS:
+		try:
+			print(f"Graph density: {round(len(EDGES) / (len(NODES) * (len(NODES) - 1)), 5)}")
+		except:
+			pass
+		
+		# Detailed node type statistics
+		print("\n--- Node Type Breakdown ---")
+		for node_type in sorted(NODE_GROUPS.keys()):
 			if NODE_GROUPS[node_type]:
 				print(f"Number of {node_type}: {len(NODE_GROUPS[node_type])}")
 		
+		# On-premises vs Azure statistics
+		onprem_types = ["User", "Computer", "Group", "Domain", "OU", "GPO"]
+		azure_types = ["AZUser", "AZGroup", "AZTenant", "AZSubscription", "AZRole", 
+					"AZServicePrincipal", "AZApp", "AZManagementGroup", "AZKeyVault", "AZVM"]
+		
+		onprem_count = sum(len(NODE_GROUPS.get(t, [])) for t in onprem_types)
+		azure_count = sum(len(NODE_GROUPS.get(t, [])) for t in azure_types)
+		
+		print(f"\n--- Environment Breakdown ---")
+		print(f"On-premises objects: {onprem_count}")
+		print(f"Azure objects: {azure_count}")
+		print(f"Sync ratio: {len(SYNC_RELATIONSHIPS)}/{len(onprem_users)} ({round(len(SYNC_RELATIONSHIPS)/len(onprem_users)*100, 1)}%)")
+		
 		end_ = timer()
-		print(f"Hybrid environment generation completed in {end_ - start_:.2f} seconds")
-
-	def create_simple_azure_subscriptions(self, tenant_id):
-		"""Create a simple Azure subscription"""
-		subscription_id = str(uuid.uuid4()).upper()
-		subscription_node = {
-			"id": str(len(NODES)),
-			"labels": ["AZSubscription"],
-			"properties": {
-				"name": f"{self.domain}_Subscription_1",
-				"objectid": subscription_id,
-				"tenantid": tenant_id,
-				"subscriptionId": str(uuid.uuid4()).upper()
-			}
-		}
-		
-		# Add to database
-		sub_idx = len(NODES)
-		NODES.append(subscription_node)
-		NODE_GROUPS["AZSubscription"].append(sub_idx)
-		DATABASE_ID["objectid"][subscription_id] = sub_idx
-		
-		# Create tenant relationship
-		tenant_idx = get_node_index(tenant_id, "objectid")
-		if tenant_idx != -1:
-			edge_operation(tenant_idx, sub_idx, "AZContains")
-		
-		return [subscription_id]
-
-	def create_simple_azure_roles(self, tenant_id):
-		"""Create simple Azure roles"""
-		role_names = ["Global Administrator", "Contributor", "Reader"]
-		roles = []
-		
-		for role_name in role_names:
-			role_id = str(uuid.uuid4()).upper()
-			role_node = {
-				"id": str(len(NODES)),
-				"labels": ["AZRole"],
-				"properties": {
-					"name": role_name,
-					"objectid": role_id,
-					"tenantid": tenant_id,
-					"roleTemplateId": str(uuid.uuid4()).upper(),
-					"displayName": role_name
-				}
-			}
-			
-			# Add to database
-			role_idx = len(NODES)
-			NODES.append(role_node)
-			NODE_GROUPS["AZRole"].append(role_idx)
-			DATABASE_ID["objectid"][role_id] = role_idx
-			
-			# Create tenant relationship
-			tenant_idx = get_node_index(tenant_id, "objectid")
-			if tenant_idx != -1:
-				edge_operation(tenant_idx, role_idx, "AZContains")
-			
-			roles.append(role_id)
-		
-		return roles
-
-	def create_simple_azure_groups(self, tenant_id):
-		"""Create simple Azure groups"""
-		group_names = ["All Users", "Global Admins", "IT Department"]
-		groups = []
-		
-		for group_name in group_names:
-			group_id = str(uuid.uuid4()).upper()
-			group_node = {
-				"id": str(len(NODES)),
-				"labels": ["AZGroup"],
-				"properties": {
-					"name": group_name,
-					"objectid": group_id,
-					"tenantid": tenant_id,
-					"displayName": group_name
-				}
-			}
-			
-			# Add to database
-			group_idx = len(NODES)
-			NODES.append(group_node)
-			NODE_GROUPS["AZGroup"].append(group_idx)
-			DATABASE_ID["objectid"][group_id] = group_idx
-			
-			# Create tenant relationship
-			tenant_idx = get_node_index(tenant_id, "objectid")
-			if tenant_idx != -1:
-				edge_operation(tenant_idx, group_idx, "AZContains")
-			
-			groups.append(group_id)
-		
-		return groups
-
-	def create_hybrid_relationships(self, onprem_users, azure_users, azure_groups):
-		"""Create hybrid-specific relationships and permissions"""
-		print("Creating hybrid-specific relationships")
-		
-		if not azure_groups:
-			print("No Azure groups available, skipping hybrid group relationships")
-			return
-		
-		# Some Azure users can manage on-premises resources
-		num_hybrid_admins = min(5, len(azure_users))
-		if num_hybrid_admins > 0:
-			hybrid_admins = random.sample(azure_users, num_hybrid_admins)
-			
-			for admin_id in hybrid_admins:
-				# Azure admin can reset on-premises user passwords (simplified)
-				target_onprem = random.choice(onprem_users)
-				target_idx = get_node_index(target_onprem + "_User", "name")
-				admin_idx = get_node_index(admin_id, "objectid")
-				
-				if target_idx != -1 and admin_idx != -1:
-					edge_operation(admin_idx, target_idx, "ForceChangePassword",
-								["isHybridPermission", "grantedVia"],
-								[True, "Azure AD Privileged Identity Management"])
-		
-		# Some on-premises users have Azure permissions
-		num_onprem_azure_access = min(3, len(onprem_users))
-		if num_onprem_azure_access > 0:
-			onprem_azure_users = random.sample(onprem_users, num_onprem_azure_access)
-			
-			for onprem_user in onprem_azure_users:
-				if onprem_user in SYNC_RELATIONSHIPS:
-					azure_counterpart = SYNC_RELATIONSHIPS[onprem_user]
-					# Give the Azure counterpart some Azure group membership
-					if azure_groups:
-						target_group = random.choice(azure_groups)
-						azure_idx = get_node_index(azure_counterpart, "objectid")
-						group_idx = get_node_index(target_group, "objectid")
-						
-						if azure_idx != -1 and group_idx != -1:
-							edge_operation(azure_idx, group_idx, "AZMemberOf",
-										["grantedViaSync"], [True])
+		print(f"\nHybrid environment generation completed in {end_ - start_:.2f} seconds")
 
 	def create_synced_azure_users(self, onprem_users, tenant_id, roles):
 		"""Create Azure users that are synced from on-premises"""
@@ -1360,7 +1522,7 @@ class MainMenu(cmd.Cmd):
 		
 		for onprem_user in synced_onprem_users:
 			# Extract user info from on-premises user
-			onprem_node_idx = get_node_index(onprem_user + "_User", "name")
+			onprem_node_idx = self.get_node_index(onprem_user + "_User", "name")
 			if onprem_node_idx == -1:
 				continue
 				
@@ -1374,12 +1536,12 @@ class MainMenu(cmd.Cmd):
 			base_name = onprem_user.split("@")[0] if "@" in onprem_user else onprem_user
 			upn = f"{base_name.lower()}@{self.domain.lower()}"
 			
-			# Create Azure user node manually
+			# Create Azure user node manually - FIXED to match expected format
 			azure_node = {
 				"id": str(len(NODES)),
 				"labels": ["AZUser"],
 				"properties": {
-					"name": display_name,
+					"name": display_name,  # This is what az_assign_roles looks for
 					"userPrincipalName": upn,
 					"objectid": azure_user_id,
 					"tenantid": tenant_id,
@@ -1397,75 +1559,325 @@ class MainMenu(cmd.Cmd):
 			DATABASE_ID["objectid"][azure_user_id] = azure_node_idx
 			
 			# Create tenant relationship - check if tenant exists first
-			tenant_idx = get_node_index(tenant_id, "objectid")
+			tenant_idx = self.get_node_index(tenant_id, "objectid")
 			if tenant_idx != -1:
-				edge_operation(tenant_idx, azure_node_idx, "AZContains")
+				self.edge_operation(tenant_idx, azure_node_idx, "AZContains")
 			else:
 				print(f"Warning: Tenant {tenant_id} not found, skipping tenant relationship")
 			
-			azure_users.append(azure_user_id)
+			# IMPORTANT: Store the node INDEX, not the ID for compatibility with Azure functions
+			azure_users.append(azure_node_idx)
 			
-			# Store sync relationship
+			# Store sync relationship using the original user identifier
 			SYNC_RELATIONSHIPS[onprem_user] = azure_user_id
 			HYBRID_OBJECTS[onprem_user] = {
 				"onprem_id": onprem_user,
 				"azure_id": azure_user_id,
+				"azure_idx": azure_node_idx,
 				"type": "User"
 			}
 		
 		return azure_users
 
-	def create_sync_relationships(self, onprem_users, azure_users):
+	def create_cloud_only_azure_users(self, tenant_id, roles):
+		"""Create Azure-only users that don't exist on-premises"""
+		# Create some cloud-only users (contractors, external partners, etc.)
+		cloud_user_count = max(10, int(get_int_param_value("User", "nUsers", self.parameters) * 0.15))
+		cloud_users = []
+		
+		print(f"Creating {cloud_user_count} cloud-only Azure users")
+		
+		for i in range(cloud_user_count):
+			first_name = random.choice(self.first_names)
+			last_name = random.choice(self.last_names)
+			display_name = f"{first_name} {last_name}"
+			upn = f"{first_name.lower()}.{last_name.lower()}@{self.domain.lower()}"
+			
+			user_id = str(uuid.uuid4()).upper()
+			
+			# FIXED to match expected format
+			user_node = {
+				"id": str(len(NODES)),
+				"labels": ["AZUser"],
+				"properties": {
+					"name": display_name,  # This is what az_assign_roles looks for
+					"userPrincipalName": upn,
+					"objectid": user_id,
+					"tenantid": tenant_id,
+					"enabled": random.choice([True, True, True, False]),  # 75% enabled
+					"displayName": display_name,
+					"syncedFromOnPremises": False,
+					"userType": random.choice(["Member", "Guest"]),
+					"accountType": "Cloud-Only"
+				}
+			}
+			
+			user_idx = len(NODES)
+			NODES.append(user_node)
+			NODE_GROUPS["AZUser"].append(user_idx)
+			DATABASE_ID["objectid"][user_id] = user_idx
+			
+			# Create tenant relationship
+			tenant_idx = self.get_node_index(tenant_id, "objectid")
+			if tenant_idx != -1:
+				self.edge_operation(tenant_idx, user_idx, "AZContains")
+			
+			# IMPORTANT: Store the node INDEX, not the ID for compatibility with Azure functions
+			cloud_users.append(user_idx)
+			CLOUD_ONLY_OBJECTS[user_id] = {
+				"type": "User", 
+				"created_in": "Azure",
+				"azure_idx": user_idx
+			}
+		
+		return cloud_users
+
+	def create_sync_relationships(self, onprem_users, azure_user_indices):
 		"""Create explicit sync relationships between on-premises and Azure objects"""
 		print("Creating sync relationships between on-premises and Azure")
 		
-		for i, (onprem_user, azure_user) in enumerate(zip(onprem_users, azure_users)):
-			# Find the actual node indices
-			onprem_idx = get_node_index(onprem_user + "_User", "name")
-			azure_idx = get_node_index(azure_user, "objectid")
-			
-			if onprem_idx != -1 and azure_idx != -1:
-				# Create bidirectional sync relationship using edge_operation
-				edge_operation(onprem_idx, azure_idx, "SyncedTo", 
-							["syncType", "syncDirection"], 
-							["AADConnect", "OnPremToAzure"])
-				
-				edge_operation(azure_idx, onprem_idx, "SyncedFrom", 
-							["syncType", "syncDirection"], 
-							["AADConnect", "AzureToOnPrem"])
-
-	def create_hybrid_relationships(self, onprem_users, azure_users, azure_groups):
-		"""Create hybrid-specific relationships and permissions"""
-		print("Creating hybrid-specific relationships")
-		
-		# Some Azure users can manage on-premises resources
-		num_hybrid_admins = min(5, len(azure_users))
-		hybrid_admins = random.sample(azure_users, num_hybrid_admins)
-		
-		for admin_id in hybrid_admins:
-			# Azure admin can reset on-premises user passwords (simplified)
-			target_onprem = random.choice(onprem_users)
-			target_idx = get_node_index(target_onprem + "_User", "name")
-			admin_idx = get_node_index(admin_id, "objectid")
-			
-			if target_idx != -1 and admin_idx != -1:
-				edge_operation(admin_idx, target_idx, "ForceChangePassword",
-							["isHybridPermission", "grantedVia"],
-							[True, "Azure AD Privileged Identity Management"])
-		
-		# Some on-premises users have Azure permissions
-		num_onprem_azure_access = min(3, len(onprem_users))
-		onprem_azure_users = random.sample(onprem_users, num_onprem_azure_access)
-		
-		for onprem_user in onprem_azure_users:
+		synced_count = 0
+		for onprem_user in onprem_users:
 			if onprem_user in SYNC_RELATIONSHIPS:
-				azure_counterpart = SYNC_RELATIONSHIPS[onprem_user]
-				# Give the Azure counterpart some Azure group membership
-				if azure_groups:
-					target_group = random.choice(azure_groups)
-					azure_idx = get_node_index(azure_counterpart, "objectid")
-					group_idx = get_node_index(target_group, "objectid")
+				azure_user_id = SYNC_RELATIONSHIPS[onprem_user]
+				
+				# Find the actual node indices
+				onprem_idx = self.get_node_index(onprem_user + "_User", "name")
+				azure_idx = self.get_node_index(azure_user_id, "objectid")
+				
+				if onprem_idx != -1 and azure_idx != -1:
+					# Create bidirectional sync relationship using edge_operation
+					self.edge_operation(onprem_idx, azure_idx, "SyncedTo", 
+								["syncType", "syncDirection"], 
+								["AADConnect", "OnPremToAzure"])
 					
-					if azure_idx != -1 and group_idx != -1:
-						edge_operation(azure_idx, group_idx, "AZMemberOf",
-									["grantedViaSync"], [True])
+					self.edge_operation(azure_idx, onprem_idx, "SyncedFrom", 
+								["syncType", "syncDirection"], 
+								["AADConnect", "AzureToOnPrem"])
+					synced_count += 1
+		
+		print(f"Created {synced_count} sync relationships")
+
+	def create_comprehensive_hybrid_relationships(self, onprem_users, azure_user_indices, azure_groups, 
+											 service_principals, key_vaults, vms):
+		"""Create comprehensive hybrid-specific relationships and cross-environment permissions"""
+		print("Creating comprehensive hybrid relationships")
+		
+		if not azure_user_indices:
+			print("No Azure users available, skipping hybrid relationships")
+			return
+		
+		# Convert indices back to object IDs for some operations
+		azure_user_ids = []
+		for idx in azure_user_indices:
+			if idx < len(NODES):
+				node = NODES[idx]
+				if "objectid" in node["properties"]:
+					azure_user_ids.append(node["properties"]["objectid"])
+		
+		# 1. Azure users managing on-premises resources
+		num_hybrid_admins = min(8, len(azure_user_indices))
+		if num_hybrid_admins > 0:
+			hybrid_admin_indices = random.sample(azure_user_indices, num_hybrid_admins)
+			
+			for admin_idx in hybrid_admin_indices:
+				if admin_idx >= len(NODES):
+					continue
+					
+				# Azure admin can reset on-premises user passwords
+				if onprem_users:
+					target_onprem = random.choice(onprem_users)
+					target_idx = self.get_node_index(target_onprem + "_User", "name")
+					if target_idx != -1:
+						self.edge_operation(admin_idx, target_idx, "ForceChangePassword",
+									["isHybridPermission", "grantedVia"],
+									[True, "Azure AD Privileged Identity Management"])
+				
+				# Azure admin can manage on-premises computers
+				if COMPUTERS:
+					target_computer = random.choice(COMPUTERS)
+					comp_idx = self.get_node_index(target_computer, "name")
+					if comp_idx != -1:
+						self.edge_operation(admin_idx, comp_idx, "AdminTo",
+									["isHybridPermission", "grantedVia"],
+									[True, "Azure Arc"])
+		
+		# 2. Service principals accessing on-premises resources
+		if service_principals:
+			num_sp_onprem_access = min(3, len(service_principals))
+			sp_with_onprem_access = random.sample(service_principals, num_sp_onprem_access)
+			
+			for sp_id in sp_with_onprem_access:
+				sp_idx = self.get_node_index(sp_id, "objectid")
+				if sp_idx == -1:
+					continue
+					
+				# Service principal can read from on-premises
+				if ENABLED_USERS:
+					target_user = random.choice(ENABLED_USERS)
+					user_idx = self.get_node_index(target_user + "_User", "name")
+					if user_idx != -1:
+						self.edge_operation(sp_idx, user_idx, "ReadLAPSPassword",
+									["isHybridPermission", "grantedVia"],
+									[True, "Hybrid Identity"])
+		
+		# 3. On-premises users with Azure permissions
+		num_onprem_azure_access = min(15, len(onprem_users))
+		if num_onprem_azure_access > 0:
+			onprem_azure_users = random.sample(onprem_users, num_onprem_azure_access)
+			
+			for onprem_user in onprem_azure_users:
+				if onprem_user in SYNC_RELATIONSHIPS:
+					azure_counterpart_id = SYNC_RELATIONSHIPS[onprem_user]
+					azure_idx = self.get_node_index(azure_counterpart_id, "objectid")
+					if azure_idx == -1:
+						continue
+					
+					# Azure group membership
+					if azure_groups:
+						target_group = random.choice(azure_groups)
+						group_idx = self.get_node_index(target_group, "objectid")
+						if group_idx != -1:
+							self.edge_operation(azure_idx, group_idx, "AZMemberOf",
+										["grantedViaSync"], [True])
+					
+					# Azure resource permissions
+					if key_vaults and random.random() < 0.3:  # 30% chance
+						target_kv = random.choice(key_vaults)
+						kv_idx = self.get_node_index(target_kv, "objectid")
+						if kv_idx != -1:
+							self.edge_operation(azure_idx, kv_idx, "AZKeyVaultContributor",
+										["grantedViaSync", "source"], 
+										[True, "On-premises group membership"])
+					
+					if vms and random.random() < 0.2:  # 20% chance
+						target_vm = random.choice(vms)
+						vm_idx = self.get_node_index(target_vm, "objectid")
+						if vm_idx != -1:
+							self.edge_operation(azure_idx, vm_idx, "AZVMContributor",
+										["grantedViaSync", "source"],
+										[True, "On-premises admin rights"])
+		
+		# 4. Cross-environment group relationships - FIXED
+		if azure_groups:
+			# Get all on-premises security groups (flatten SECURITY_GROUPS if it contains lists)
+			onprem_security_groups = []
+			try:
+				# SECURITY_GROUPS might be a list of lists or a simple list
+				if SECURITY_GROUPS:
+					if isinstance(SECURITY_GROUPS[0], list):
+						# If it's a list of lists, flatten it
+						for group_list in SECURITY_GROUPS:
+							onprem_security_groups.extend(group_list)
+					else:
+						# If it's a simple list, use it directly
+						onprem_security_groups = SECURITY_GROUPS
+			except (IndexError, TypeError):
+				# If SECURITY_GROUPS is empty or malformed, skip this section
+				print("Warning: SECURITY_GROUPS is empty or malformed, skipping group correspondence")
+				onprem_security_groups = []
+			
+			if onprem_security_groups:
+				# Some Azure groups correspond to on-premises groups
+				num_corresponding_groups = min(len(azure_groups), len(onprem_security_groups), 5)
+				
+				for i in range(num_corresponding_groups):
+					if i < len(azure_groups) and i < len(onprem_security_groups):
+						azure_group_id = azure_groups[i]
+						onprem_group = onprem_security_groups[i]
+						
+						# Ensure onprem_group is a string, not a list
+						if isinstance(onprem_group, (list, tuple)):
+							if onprem_group:  # If the list is not empty
+								onprem_group = onprem_group[0]  # Take the first element
+							else:
+								continue  # Skip empty lists
+						
+						azure_group_idx = self.get_node_index(azure_group_id, "objectid")
+						onprem_group_idx = self.get_node_index(onprem_group, "name")
+						
+						if azure_group_idx != -1 and onprem_group_idx != -1:
+							# Create correspondence relationship
+							self.edge_operation(onprem_group_idx, azure_group_idx, "SyncedTo",
+										["syncType", "groupCorrespondence"],
+										["AADConnect", True])
+							self.edge_operation(azure_group_idx, onprem_group_idx, "SyncedFrom",
+										["syncType", "groupCorrespondence"],
+										["AADConnect", True])
+		
+		# 5. Conditional Access and Intune relationships
+		if vms and COMPUTERS:
+			# Some on-premises computers are Azure AD joined or hybrid joined
+			num_hybrid_joined = min(len(COMPUTERS), int(len(COMPUTERS) * 0.4))  # 40% hybrid joined
+			hybrid_joined_computers = random.sample(COMPUTERS, num_hybrid_joined)
+			
+			for computer in hybrid_joined_computers:
+				comp_idx = self.get_node_index(computer, "name")
+				if comp_idx == -1:
+					continue
+					
+				# Computer has relationship to Azure
+				if vms:
+					target_vm = random.choice(vms)
+					vm_idx = self.get_node_index(target_vm, "objectid")
+					if vm_idx != -1:
+						self.edge_operation(comp_idx, vm_idx, "AzureADJoined",
+									["joinType", "managedBy"],
+									["Hybrid", "Intune"])
+
+		print(f"Created hybrid relationships: {len(azure_user_indices)} Azure users, {len(onprem_users)} on-premises users")
+	def generate_data_hybrid_phase4_fixed(self, all_azure_users, azure_groups, service_principals, roles, tenant_id, subscriptions, key_vaults, vms):
+		"""Fixed Phase 4: Creating Azure Relationships"""
+		print("=== PHASE 4: Creating Azure Relationships ===")
+		
+		# Assign group memberships - use indices directly
+		print("Assigning Azure group memberships")
+		if azure_groups and all_azure_users:
+			# Convert user indices to the format expected by az_assign_group_memberships
+			# The Azure functions expect user IDs, not indices
+			azure_user_ids = []
+			for user_idx in all_azure_users:
+				if user_idx < len(NODES):
+					node = NODES[user_idx]
+					if "objectid" in node["properties"]:
+						azure_user_ids.append(node["properties"]["objectid"])
+			
+			if azure_user_ids:
+				az_assign_group_memberships(azure_groups, azure_user_ids, self.parameters)
+		
+		# Assign roles - use indices directly
+		print("Assigning Azure roles")
+		if roles and all_azure_users:
+			# Convert user indices to the format expected by az_assign_roles
+			azure_user_ids = []
+			for user_idx in all_azure_users:
+				if user_idx < len(NODES):
+					node = NODES[user_idx]
+					if "objectid" in node["properties"]:
+						azure_user_ids.append(node["properties"]["objectid"])
+			
+			if azure_user_ids:
+				try:
+					az_assign_roles(azure_user_ids, azure_groups, service_principals, roles, 
+								tenant_id, subscriptions, self.parameters)
+				except Exception as e:
+					print(f"Warning: Error in role assignment: {e}")
+					print("Continuing with hybrid generation...")
+		
+		# Generate Azure permissions
+		print("Generating Azure permissions")
+		if all_azure_users:
+			azure_user_ids = []
+			for user_idx in all_azure_users:
+				if user_idx < len(NODES):
+					node = NODES[user_idx]
+					if "objectid" in node["properties"]:
+						azure_user_ids.append(node["properties"]["objectid"])
+			
+			if azure_user_ids:
+				try:
+					az_create_permissions(azure_user_ids, azure_groups, service_principals, 
+										key_vaults, vms, self.parameters)
+				except Exception as e:
+					print(f"Warning: Error in permission creation: {e}")
+					print("Continuing with hybrid generation...")
