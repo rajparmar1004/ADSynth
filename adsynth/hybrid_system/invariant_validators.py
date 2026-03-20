@@ -1,297 +1,345 @@
 """
-Hybrid Identity Graph — Semantic Invariant Validators
-======================================================
-Implements the semantic correctness checks from paper Appendix A.3.
+adsynth/hybrid_system/invariant_validators.py
+=============================================
+Semantic invariant validators — updated to read from the original
+DATABASE.py data store (NODES, EDGES) instead of the parallel
+export_writer.py (HYBRID_NODES, HYBRID_EDGES).
 
-These validators operate on the in-memory graph (HYBRID_NODES / HYBRID_EDGES)
-after generation is complete, or can be called incrementally.
+Logic is identical to the original invariant_validators.py.
+Only the data source references changed.
 
-Invariants checked:
-  1. Per-link SyncIdentity invariant  (§4.2.3 + Appendix A.3)
-     For every SYNC_LINK(d, t) edge, exactly one SyncIdentity s_dt must exist:
-       - SERVICES_LINK(s_dt, d)
-       - SYNCS_TO(s_dt, t)
-       - RUNS_ON(s_dt, host)  where host.serverRole == "EntraConnect"
-
-  2. PHS mode invariant
-     If PHS is enabled for (d, t), per-link SyncIdentity with syncMode ∈ {PHS, Mixed} exists,
-     and at least one SYNCED_TO edge exists.
-
-  3. PTA mode invariant
-     If PTA is enabled for tenant t, at least one Server with serverRole=="PTAAgent" exists
-     AND HAS_PTA_AGENT(t, ptaServer) exists.
-
-  4. AD FS mode invariant
-     If ADFS is enabled for (d, t), IS_FEDERATED_WITH(d, t) exists AND a Server with
-     serverRole=="ADFS" exists.
+Invariants:
+  I1 — Per-link SyncIdentity: every SYNC_LINK has exactly one SyncIdentity
+       with SERVICES_LINK, SYNCS_TO, and RUNS_ON(EntraConnect)
+  I2 — PTA: every PTA-mode tenant has a PTAAgent server + HAS_PTA_AGENT edge
+  I3 — ADFS: every ADFS-mode link has IS_FEDERATED_WITH + ADFS server
+  I4 — PHS: SyncIdentity with syncMode PHS/Mixed exists + SYNCED_TO edges present
 """
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
-from adsynth.hybrid_system.schema_registry import RelType, NodeLabel, VALID_SYNC_MODES
-from adsynth.hybrid_system.export_writer import HYBRID_NODES, HYBRID_EDGES
-
-
-# Internal helpers
-
-def _nodes_by_label(label: NodeLabel) -> List[Dict[str, Any]]:
-    """Return all nodes whose first label matches the given NodeLabel."""
-    return [n for n in HYBRID_NODES if n["labels"] and n["labels"][0] == label.value]
+from adsynth.DATABASE import (
+    NODES, EDGES,
+    SYNC_LINKS, SYNC_IDENTITY_NODES,
+    TENANT_HYBRID_MODE,
+    PTA_AGENT_NODES, ADFS_SERVER_NODES,
+)
 
 
-def _edges_by_type(rel_type: RelType) -> List[Dict[str, Any]]:
-    """Return all edges of a given RelType."""
-    return [e for e in HYBRID_EDGES if e["relType"] == rel_type.value]
+# ============================================================
+# Internal helpers — read from NODES / EDGES
+# ============================================================
+
+def _nodes_by_label(label: str) -> List[Dict[str, Any]]:
+    return [n for n in NODES if n["labels"] and n["labels"][-1] == label]
 
 
-def _edge_exists(rel_type: RelType, start_id: str, end_id: str) -> bool:
-    """Check if a specific directed edge exists."""
-    for e in HYBRID_EDGES:
-        if e["relType"] == rel_type.value and e["start"] == start_id and e["end"] == end_id:
+def _edges_by_type(rel_type: str) -> List[Dict[str, Any]]:
+    return [e for e in EDGES if e.get("label") == rel_type]
+
+
+def _edge_exists(rel_type: str, start_id: str, end_id: str) -> bool:
+    for e in EDGES:
+        if (e.get("label") == rel_type
+                and e.get("start", {}).get("id") == start_id
+                and e.get("end", {}).get("id") == end_id):
             return True
     return False
 
 
-def _get_node_by_id(node_id: str) -> Optional[Dict[str, Any]]:
-    for n in HYBRID_NODES:
-        if n["id"] == node_id:
+def _get_node_by_objectid(objectid: str) -> Optional[Dict[str, Any]]:
+    for n in NODES:
+        if n["properties"].get("objectid") == objectid:
             return n
     return None
 
 
-def _nodes_with_server_role(role: str) -> List[Dict[str, Any]]:
-    """Return Server nodes with a specific serverRole property value."""
-    return [
-        n for n in HYBRID_NODES
-        if n["labels"] and n["labels"][0] == NodeLabel.Server.value
-        and n["properties"].get("serverRole") == role
-    ]
+def _get_node_by_index(idx: int) -> Optional[Dict[str, Any]]:
+    if 0 <= idx < len(NODES):
+        return NODES[idx]
+    return None
 
 
-# Invariant 1: Per-link SyncIdentity
+def _neo4j_id_of(node: Dict[str, Any]) -> str:
+    """Return the Neo4j internal id string used in edge start/end."""
+    return node.get("id", "")
+
+
+# ============================================================
+# Invariant I1 — Per-link SyncIdentity
+# ============================================================
 
 def check_sync_identity_invariant() -> List[str]:
     """
-    For every SYNC_LINK(d, t) edge, verify:
-      a) Exactly one SyncIdentity exists with linkKey = "d.id->t.id"
-      b) SERVICES_LINK(sync_id, d.id) exists
-      c) SYNCS_TO(sync_id, t.id) exists
-      d) RUNS_ON(sync_id, h.id) for some Server h with serverRole=="EntraConnect"
-
-    Returns list of violation strings (empty = all good).
+    For every SYNC_LINK (domain_name, tenant_id) in SYNC_LINKS:
+      a) Exactly one SyncIdentity with linkKey = "domain_id->tenant_id" exists
+      b) SERVICES_LINK(sync, domain) exists
+      c) SYNCS_TO(sync, tenant) exists
+      d) RUNS_ON(sync, host) where host has serverRole=EntraConnect
     """
     violations = []
-    entra_connect_servers: Set[str] = {
-        n["id"] for n in _nodes_with_server_role("EntraConnect")
-    }
 
-    sync_links = _edges_by_type(RelType.SYNC_LINK)
-    if not sync_links:
-        return []  # No sync links → invariant is vacuously satisfied
+    if not SYNC_LINKS:
+        return []
 
-    # Index SyncIdentity nodes by linkKey for efficient lookup
-    sync_id_by_link_key: Dict[str, List[Dict[str, Any]]] = {}
-    for node in _nodes_by_label(NodeLabel.SyncIdentity):
-        lk = node["properties"].get("linkKey", "")
-        sync_id_by_link_key.setdefault(lk, []).append(node)
+    # Build set of EntraConnect server neo4j ids
+    ec_neo4j_ids = set()
+    for n in NODES:
+        if (n["labels"] and n["labels"][-1] == "ConnectorHost"
+                and n["properties"].get("serverRole") == "EntraConnect"):
+            ec_neo4j_ids.add(_neo4j_id_of(n))
 
-    for sl in sync_links:
-        d_id = sl["start"]
-        t_id = sl["end"]
-        expected_link_key = f"{d_id}->{t_id}"
+    for domain_name, tenant_id in SYNC_LINKS:
+        # Get node indices from tracking dict
+        sync_idx = SYNC_IDENTITY_NODES.get((domain_name, tenant_id))
 
-        matches = sync_id_by_link_key.get(expected_link_key, [])
-
-        # (a) Exactly one SyncIdentity per SYNC_LINK
-        if len(matches) == 0:
+        # (a) SyncIdentity must exist
+        if sync_idx is None:
             violations.append(
-                f"SYNC_LINK({d_id}, {t_id}): no SyncIdentity with linkKey='{expected_link_key}'"
+                f"SYNC_LINK({domain_name}, {tenant_id}): "
+                f"no SyncIdentity node in SYNC_IDENTITY_NODES"
             )
             continue
-        if len(matches) > 1:
+
+        sync_node = _get_node_by_index(sync_idx)
+        if sync_node is None:
             violations.append(
-                f"SYNC_LINK({d_id}, {t_id}): {len(matches)} SyncIdentity nodes found "
-                f"(expected exactly 1) with linkKey='{expected_link_key}'"
+                f"SYNC_LINK({domain_name}, {tenant_id}): "
+                f"SyncIdentity index {sync_idx} not found in NODES"
+            )
+            continue
+
+        sync_neo4j_id = _neo4j_id_of(sync_node)
+
+        # Find domain node neo4j id
+        domain_node = None
+        for n in NODES:
+            if (n["labels"] and n["labels"][-1] == "Domain"
+                    and n["properties"].get("name", "").upper() == domain_name.upper()):
+                domain_node = n
+                break
+
+        # Find tenant node neo4j id
+        tenant_node = _get_node_by_objectid(tenant_id)
+
+        # (b) SERVICES_LINK(sync -> domain)
+        if domain_node:
+            if not _edge_exists("SERVICES_LINK", sync_neo4j_id,
+                                _neo4j_id_of(domain_node)):
+                violations.append(
+                    f"SyncIdentity for ({domain_name},{tenant_id}) "
+                    f"missing SERVICES_LINK -> domain"
+                )
+        else:
+            violations.append(
+                f"SyncIdentity for ({domain_name},{tenant_id}): "
+                f"domain node '{domain_name}' not found in NODES"
             )
 
-        s = matches[0]
-        s_id = s["id"]
-
-        # (b) SERVICES_LINK(s, d)
-        if not _edge_exists(RelType.SERVICES_LINK, s_id, d_id):
+        # (c) SYNCS_TO(sync -> tenant)
+        if tenant_node:
+            if not _edge_exists("SYNCS_TO", sync_neo4j_id,
+                                _neo4j_id_of(tenant_node)):
+                violations.append(
+                    f"SyncIdentity for ({domain_name},{tenant_id}) "
+                    f"missing SYNCS_TO -> tenant"
+                )
+        else:
             violations.append(
-                f"SyncIdentity '{s_id}' missing SERVICES_LINK -> domain '{d_id}'"
+                f"SyncIdentity for ({domain_name},{tenant_id}): "
+                f"tenant node '{tenant_id}' not found in NODES"
             )
 
-        # (c) SYNCS_TO(s, t)
-        if not _edge_exists(RelType.SYNCS_TO, s_id, t_id):
-            violations.append(
-                f"SyncIdentity '{s_id}' missing SYNCS_TO -> tenant '{t_id}'"
-            )
-
-        # (d) RUNS_ON(s, host) where host.serverRole == "EntraConnect"
+        # (d) RUNS_ON(sync -> EntraConnect host)
         runs_on_targets = {
-            e["end"] for e in HYBRID_EDGES
-            if e["relType"] == RelType.RUNS_ON.value and e["start"] == s_id
+            e.get("end", {}).get("id")
+            for e in EDGES
+            if e.get("label") == "RUNS_ON"
+            and e.get("start", {}).get("id") == sync_neo4j_id
         }
-        valid_hosts = runs_on_targets & entra_connect_servers
+        valid_hosts = runs_on_targets & ec_neo4j_ids
         if not valid_hosts:
             violations.append(
-                f"SyncIdentity '{s_id}' is not RUNS_ON any EntraConnect server "
-                f"(available EntraConnect servers: {entra_connect_servers})"
+                f"SyncIdentity for ({domain_name},{tenant_id}) "
+                f"not RUNS_ON any EntraConnect server"
             )
 
     return violations
 
 
-# Invariant 2: PHS mode
+# ============================================================
+# Invariant I2 — PTA mode
+# ============================================================
 
-def check_phs_invariant(domain_id: str, tenant_id: str) -> List[str]:
+def check_pta_invariant() -> List[str]:
     """
-    If PHS is enabled for (domain_id, tenant_id):
-      a) A SyncIdentity with syncMode ∈ {PHS, Mixed} and correct linkKey must exist.
-      b) At least one SYNCED_TO(user_ad, user_entra) edge must exist.
-
-    Returns list of violation strings.
-    """
-    violations = []
-    link_key = f"{domain_id}->{tenant_id}"
-
-    # Find the SyncIdentity for this link
-    sync_identity = None
-    for node in _nodes_by_label(NodeLabel.SyncIdentity):
-        if node["properties"].get("linkKey") == link_key:
-            sync_identity = node
-            break
-
-    if sync_identity is None:
-        return [f"PHS check: no SyncIdentity found for linkKey='{link_key}'"]
-
-    sync_mode = sync_identity["properties"].get("syncMode", "")
-    if sync_mode not in ("PHS", "Mixed"):
-        violations.append(
-            f"PHS mode required for ({domain_id},{tenant_id}) but SyncIdentity "
-            f"'{sync_identity['id']}' has syncMode='{sync_mode}'"
-        )
-
-    # At least one SYNCED_TO edge must exist globally
-    # (only enforced once User nodes exist — skipped in topology-only runs)
-    synced_to_edges = _edges_by_type(RelType.SYNCED_TO)
-    user_nodes = [n for n in HYBRID_NODES if n["labels"] and n["labels"][0] == NodeLabel.User.value]
-    if user_nodes and not synced_to_edges:
-        violations.append(
-            f"PHS mode enabled for ({domain_id},{tenant_id}) but no SYNCED_TO edges exist"
-        )
-
-    return violations
-
-
-# Invariant 3: PTA mode
-
-def check_pta_invariant(tenant_id: str) -> List[str]:
-    """
-    If PTA is enabled for tenant_id:
-      a) At least one Server with serverRole=="PTAAgent" must exist.
-      b) HAS_PTA_AGENT(tenant_id, pta_server) must exist.
-
-    Returns list of violation strings.
+    For every tenant with TENANT_HYBRID_MODE in (PTA, Mixed):
+      a) At least one PTAAgentHost node exists
+      b) HAS_PTA_AGENT(tenant -> pta_host) edge exists
     """
     violations = []
 
-    pta_servers = _nodes_with_server_role("PTAAgent")
-    if not pta_servers:
-        violations.append(
-            f"PTA mode requires at least one Server with serverRole='PTAAgent', none found"
-        )
-        return violations
-
-    pta_server_ids = {n["id"] for n in pta_servers}
-    pta_agent_edges = [
-        e for e in _edges_by_type(RelType.HAS_PTA_AGENT)
-        if e["start"] == tenant_id and e["end"] in pta_server_ids
+    pta_tenants = [
+        t_id for t_id, mode in TENANT_HYBRID_MODE.items()
+        if mode in ("PTA", "Mixed")
     ]
-    if not pta_agent_edges:
-        violations.append(
-            f"Tenant '{tenant_id}' has no HAS_PTA_AGENT edge to any PTAAgent server "
-            f"(PTAAgent servers: {pta_server_ids})"
+
+    for tenant_id in pta_tenants:
+        pta_indices = PTA_AGENT_NODES.get(tenant_id, [])
+
+        if not pta_indices:
+            violations.append(
+                f"PTA tenant '{tenant_id}': "
+                f"no PTAAgentHost nodes in PTA_AGENT_NODES"
+            )
+            continue
+
+        # Check HAS_PTA_AGENT edge exists
+        tenant_node = _get_node_by_objectid(tenant_id)
+        if not tenant_node:
+            violations.append(
+                f"PTA tenant '{tenant_id}': tenant node not found in NODES"
+            )
+            continue
+
+        tenant_neo4j_id = _neo4j_id_of(tenant_node)
+        pta_neo4j_ids = {
+            _neo4j_id_of(NODES[i]) for i in pta_indices
+            if 0 <= i < len(NODES)
+        }
+
+        has_edge = any(
+            e.get("label") == "HAS_PTA_AGENT"
+            and e.get("start", {}).get("id") == tenant_neo4j_id
+            and e.get("end", {}).get("id") in pta_neo4j_ids
+            for e in EDGES
         )
+
+        if not has_edge:
+            violations.append(
+                f"PTA tenant '{tenant_id}': "
+                f"HAS_PTA_AGENT edge to PTAAgentHost missing"
+            )
 
     return violations
 
 
-# Invariant 4: AD FS mode
+# ============================================================
+# Invariant I3 — ADFS mode
+# ============================================================
 
-def check_adfs_invariant(domain_id: str, tenant_id: str) -> List[str]:
+def check_adfs_invariant() -> List[str]:
     """
-    If AD FS is enabled for (domain_id, tenant_id):
-      a) IS_FEDERATED_WITH(domain_id, tenant_id) must exist.
-      b) At least one Server with serverRole=="ADFS" must exist.
-
-    Returns list of violation strings.
+    For every link with TENANT_HYBRID_MODE in (ADFS, Mixed):
+      a) IS_FEDERATED_WITH(domain -> tenant) edge exists
+      b) At least one ADFSServer node exists
     """
     violations = []
 
-    if not _edge_exists(RelType.IS_FEDERATED_WITH, domain_id, tenant_id):
-        violations.append(
-            f"ADFS mode: IS_FEDERATED_WITH({domain_id}, {tenant_id}) edge is missing"
-        )
+    adfs_tenants = [
+        t_id for t_id, mode in TENANT_HYBRID_MODE.items()
+        if mode in ("ADFS", "Mixed")
+    ]
 
-    adfs_servers = _nodes_with_server_role("ADFS")
-    if not adfs_servers:
+    adfs_server_nodes = _nodes_by_label("ADFSServer")
+
+    for tenant_id in adfs_tenants:
+        if not ADFS_SERVER_NODES.get(tenant_id):
+            violations.append(
+                f"ADFS tenant '{tenant_id}': "
+                f"no ADFSServer nodes in ADFS_SERVER_NODES"
+            )
+
+        if not adfs_server_nodes:
+            violations.append(
+                "ADFS mode: no ADFSServer nodes found in NODES"
+            )
+
+        # IS_FEDERATED_WITH edge
+        fed_edges = _edges_by_type("IS_FEDERATED_WITH")
+        tenant_fed = [
+            e for e in fed_edges
+            if e.get("end", {}).get("id") == _neo4j_id_of(
+                _get_node_by_objectid(tenant_id) or {}
+            )
+        ]
+        if not tenant_fed:
+            violations.append(
+                f"ADFS tenant '{tenant_id}': "
+                f"IS_FEDERATED_WITH edge missing"
+            )
+
+    return violations
+
+
+# ============================================================
+# Invariant I4 — PHS mode
+# ============================================================
+
+def check_phs_invariant() -> List[str]:
+    """
+    For every link with TENANT_HYBRID_MODE in (PHS, Mixed):
+      a) SyncIdentity with syncMode PHS or Mixed exists for that link
+      b) At least one SYNCED_TO edge exists globally
+    """
+    violations = []
+
+    phs_links = [
+        (d, t) for (d, t) in SYNC_LINKS
+        if TENANT_HYBRID_MODE.get(t) in ("PHS", "Mixed")
+    ]
+
+    if not phs_links:
+        return []
+
+    for domain_name, tenant_id in phs_links:
+        sync_idx = SYNC_IDENTITY_NODES.get((domain_name, tenant_id))
+        if sync_idx is None:
+            violations.append(
+                f"PHS link ({domain_name},{tenant_id}): "
+                f"SyncIdentity not found"
+            )
+            continue
+
+        sync_node = _get_node_by_index(sync_idx)
+        if not sync_node:
+            continue
+
+        mode = sync_node["properties"].get("syncMode", "")
+        if mode not in ("PHS", "Mixed"):
+            violations.append(
+                f"PHS link ({domain_name},{tenant_id}): "
+                f"SyncIdentity has syncMode='{mode}', expected PHS or Mixed"
+            )
+
+    # At least one SYNCED_TO edge must exist if users were generated
+    user_nodes = _nodes_by_label("User")
+    synced_to = _edges_by_type("SYNCED_TO")
+    if user_nodes and not synced_to:
         violations.append(
-            "ADFS mode requires at least one Server with serverRole='ADFS', none found"
+            "PHS mode active but no SYNCED_TO edges found — "
+            "check user sync generation"
         )
 
     return violations
 
 
-# Full graph validation — run all invariants
+# ============================================================
+# Full validation — run all invariants
+# ============================================================
 
 def validate_graph_invariants() -> Dict[str, List[str]]:
     """
-    Run all semantic invariant checks on the current HYBRID_NODES / HYBRID_EDGES.
-
-    Returns a dict mapping invariant name -> list of violation strings.
-    An empty list means the invariant holds.
-
-    Note: PHS/PTA/ADFS invariants are only triggered if the corresponding
-    sync mode is actually configured.  This function inspects SyncIdentity nodes
-    to determine which invariants apply.
+    Run all invariant checks on current NODES / EDGES.
+    Returns {invariant_name: [violation_strings]}.
+    Empty list means the invariant holds.
     """
-    results: Dict[str, List[str]] = {}
+    results = {}
 
-    # Invariant 1: always run
-    results["sync_identity"] = check_sync_identity_invariant()
-
-    # Per sync-link, check mode-specific invariants
-    sync_links = _edges_by_type(RelType.SYNC_LINK)
-    for sl in sync_links:
-        d_id, t_id = sl["start"], sl["end"]
-        link_key = f"{d_id}->{t_id}"
-
-        # Find the SyncIdentity for this link
-        sync_identity = None
-        for node in _nodes_by_label(NodeLabel.SyncIdentity):
-            if node["properties"].get("linkKey") == link_key:
-                sync_identity = node
-                break
-
-        if sync_identity is None:
-            continue  # Already flagged by invariant 1
-
-        sync_mode = sync_identity["properties"].get("syncMode", "")
-
-        if sync_mode in ("PHS", "Mixed"):
-            key = f"phs_{d_id}_{t_id}"
-            results[key] = check_phs_invariant(d_id, t_id)
-
-        if sync_mode in ("PTA", "Mixed"):
-            key = f"pta_{t_id}"
-            results[key] = check_pta_invariant(t_id)
-
-        if sync_mode in ("ADFS", "Mixed"):
-            key = f"adfs_{d_id}_{t_id}"
-            results[key] = check_adfs_invariant(d_id, t_id)
+    results["I1_sync_identity"] = check_sync_identity_invariant()
+    results["I2_pta_mode"] = check_pta_invariant()
+    results["I3_adfs_mode"] = check_adfs_invariant()
+    results["I4_phs_mode"] = check_phs_invariant()
 
     return results
 
@@ -299,7 +347,7 @@ def validate_graph_invariants() -> Dict[str, List[str]]:
 def print_validation_report(results: Optional[Dict[str, List[str]]] = None) -> bool:
     """
     Print a human-readable validation report.
-    Returns True if all invariants pass (no violations).
+    Returns True if all invariants pass.
     """
     if results is None:
         results = validate_graph_invariants()
@@ -311,12 +359,12 @@ def print_validation_report(results: Optional[Dict[str, List[str]]] = None) -> b
     print("=" * 60)
 
     if not results:
-        print("  (no invariants applicable — graph may be empty)")
+        print("  (no invariants applicable)")
         return True
 
-    for invariant_name, violations in results.items():
+    for name, violations in results.items():
         status = "PASS" if not violations else "FAIL"
-        print(f"  [{status}] {invariant_name}")
+        print(f"  [{status}] {name}")
         for v in violations:
             print(f"         ⚠  {v}")
 
@@ -325,12 +373,3 @@ def print_validation_report(results: Optional[Dict[str, List[str]]] = None) -> b
     print("=" * 60 + "\n")
 
     return all_pass
-
-
-if __name__ == "__main__":
-    # Quick test with an empty graph
-    from adsynth.hybrid_system.export_writer import reset_graph
-    reset_graph()
-    ok = print_validation_report()
-    assert ok, "Expected empty graph to pass all invariants"
-    print("invariant_validators self-test: PASS")

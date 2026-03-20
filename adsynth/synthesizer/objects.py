@@ -21,7 +21,7 @@ from adsynth.entities.users import get_guest_user, get_default_account, get_admi
     get_forest_user_sid_list
 from adsynth.adsynth_templates.default_config import get_complementary_value
 from adsynth.DATABASE import ADMIN_USERS, COMPUTERS, DISABLED_USERS, DISTRIBUTION_GROUPS, ENABLED_USERS, FOLDERS, KERBEROASTABLES, LOCAL_ADMINS, SECURITY_GROUPS, node_operation, edge_operation, get_node_index, ridcount
-
+from adsynth.DATABASE import RUN_ID
 
 def create_admin_groups(domain_name, domain_sid, nTiers):
     # Tier 0 Admin groups
@@ -103,9 +103,9 @@ def generate_users(domain_name, domain_sid, num_nodes, current_time, first_names
         ridcount[0] += 1
         keys = ["domain", "objectid", "labels", "displayname", "name", "enabled", "pwdlastset", "lastlogon", "lastlogontimestamp",
                   "highvalue", "dontreqpreauth", "hasspn", "passwordnotreqd", "pwdneverexpires", "sensitive", "serviceprincipalnames",
-                  "sidhistory", "unconstraineddelegation", "description", "admincount", "savedcredentials"]
+                  "sidhistory", "unconstraineddelegation", "description", "admincount", "savedcredentials","plane", "runId"]
         values = [domain_name, objectsid, "User", dispname, user_name, enabled, pwdlastset, lastlogon, lastlogon, False, dontreqpreauth, 
-                  hasspn, passwordnotreqd, pwdneverexpires, False, "", sidhistory, unconstraineddelegation, "null", False, savedcredentials]
+                  hasspn, passwordnotreqd, pwdneverexpires, False, "", sidhistory, unconstraineddelegation, "null", False, savedcredentials,"AD", RUN_ID]
         id_lookup = objectsid
         node_operation("User", keys, values, id_lookup)
 
@@ -201,10 +201,10 @@ def generate_computers(domain_name, domain_sid, num_nodes, computers, current_ti
 
         # Create a Computer
         keys = [i for i in computer_property['props']]
-        keys.extend(['domain', 'labels', 'objectid'])
+        keys.extend(['domain', 'labels', 'objectid',"plane", "runId"])
 
         values = [computer_property['props'][i] for i in computer_property['props']]
-        values.extend([domain_name, "Computer", computer_property['id']])
+        values.extend([domain_name, "Computer", computer_property['id'],"AD", RUN_ID])
 
         id_lookup = computer_property['id']
         node_operation("Computer", keys, values, id_lookup)
@@ -287,9 +287,9 @@ def generate_dcs(domain_name, domain_sid, domain_dn, dcou, current_time, paramet
         exploitable=dc_properties["exploitable"]
 
         keys = ["domain", "labels", "objectid", "name", "operatingsystem", "enabled", "haslaps", "highvalue", "lastlogontimestamp", "pwdlastset",
-                "serviceprincipalnames", "unconstraineddelegation", "privesc", "creddump", "exploitable"]
+                "serviceprincipalnames", "unconstraineddelegation", "privesc", "creddump", "exploitable","plane", "runId"]
         values = [domain_name, "Computer", sid, name, os, enabled, haslaps, highvalue, lastlogontimestamp, pwdlastset,
-                serviceprincipalnames, unconstraineddelegation, privesc, creddump, exploitable]
+                serviceprincipalnames, unconstraineddelegation, privesc, creddump, exploitable,"AD", RUN_ID]
         id_lookup = sid
         node_operation("Computer", keys, values, id_lookup)
         domain_controllers.append(comp_name)

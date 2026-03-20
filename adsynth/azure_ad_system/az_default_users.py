@@ -2,6 +2,7 @@ import uuid
 import random
 from adsynth.DATABASE import NODES, EDGES, NODE_GROUPS
 from adsynth.utils.parameters import get_int_param_value, get_perc_param_value
+from adsynth.DATABASE import RUN_ID
 
 def az_create_default_users(tenant_name, tenant_id, roles, params):
     """
@@ -79,7 +80,10 @@ def az_create_users(tenant_name, tenant_id, roles, first_names, last_names, para
             "objectid": user_id,
             "tenantid": tenant_id, 
             "enabled": enabled,
-            "displayName": f"{first_name} {last_name}"
+            "displayName": f"{first_name} {last_name}",
+            "plane": "Entra",
+            "runId": RUN_ID,
+
         })
         NODE_GROUPS["AZUser"] = NODE_GROUPS.get("AZUser", [])
         NODE_GROUPS["AZUser"].append(user_id)

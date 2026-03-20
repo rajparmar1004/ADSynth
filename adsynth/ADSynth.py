@@ -54,6 +54,14 @@ from adsynth.azure_ai.smart_params import SmartParameterGenerator
 import json
 from timeit import default_timer as timer
 from datetime import datetime
+from adsynth.synthesizer.hybrid_seam import (
+    create_sync_links, create_user_synced_to_edges
+)
+from adsynth.synthesizer.nhi import create_non_humans
+from adsynth.hybrid_system.invariant_validators import (
+    validate_graph_invariants, print_validation_report
+)
+ 
 
 SYNC_RELATIONSHIPS = {}  # Maps AD object IDs to Azure object IDs
 HYBRID_OBJECTS = {}      # Tracks objects that exist in both environments
@@ -1164,6 +1172,241 @@ class MainMenu(cmd.Cmd):
 		if id_type in DATABASE_ID and identifier in DATABASE_ID[id_type]:
 			return DATABASE_ID[id_type][identifier]
 		return -1
+
+	def help_generate_hybrid_v2(self):
+		print("Generate a complete hybrid AD-Entra identity graph")
+		print("Includes: full on-prem AD + multi-tenant seam + NHI nodes")
+		print("Paper contribution: per-link SyncIdentity, PHS/PTA/ADFS modes")
+	
+ 
+	def do_generate_hybrid_v2(self, args):
+		"""
+		Full hybrid generation pipeline.
+	
+		Phase 1: Generate on-prem AD for each domain (reuses existing generate_data())
+		Phase 2: Create Entra tenants with posture/orgType metadata
+		Phase 3: Create sync links — SyncIdentity + bridge infrastructure
+		Phase 4: Create non-human identities (SP, MI, AutomationAccount)
+		Phase 5: Create SYNCED_TO user mappings per link
+		Phase 6: Validate invariants
+		Phase 7: Export
+		"""
+		import random
+		import uuid
+		from timeit import default_timer as timer
+		from datetime import datetime
+		import json
+		import os
+	
+		from adsynth.DATABASE import (
+			NODES, EDGES, NODE_GROUPS, dict_edges,
+			SYNC_LINKS, SYNC_IDENTITY_NODES, TENANT_METADATA,
+			RUN_ID, reset_DB, ridcount,
+		)
+		import adsynth.DATABASE as DB
+	
+		start_ = timer()
+	
+		reset_DB()
+		self.generate_data()   # Phase 1: full on-prem AD for domain 0
+	
+		# --------------------------------------------------------
+		# Build domain list from what generate_data() created
+		# --------------------------------------------------------
+		domain_nodes = [
+			n for n in NODES
+			if n["labels"] and n["labels"][-1] == "Domain"
+		]
+		domains = []
+		for n in domain_nodes:
+			props = n["properties"]
+			domains.append({
+				"name":  props.get("name", self.domain),
+				"id":    props.get("objectid", self.base_sid),
+				"sid":   props.get("objectid", self.base_sid),
+			})
+	
+		if not domains:
+			# Fallback if domain node not found by label
+			domains = [{
+				"name": self.domain,
+				"id":   self.base_sid,
+				"sid":  self.base_sid,
+			}]
+	
+		# --------------------------------------------------------
+		# Phase 2: Create Entra tenants
+		# --------------------------------------------------------
+		from adsynth.azure_ad_system.az_default_tenants import az_create_tenant
+		from adsynth.utils.parameters import get_int_param_value
+		seed_val = self.parameters.get("seed", 1)
+		hybrid_cfg = self.parameters.get("hybrid", {})
+		n_tenants = hybrid_cfg.get("nTenants", 3)  # paper default T=3
+		posture_dist = hybrid_cfg.get("postureDistribution", {
+			"good": 40, "average": 40, "poor": 20
+		})
+	
+		rng_tenant = random.Random(seed_val ^ 0x99)
+	
+		tenants = []
+		for i in range(n_tenants):
+			# Build tenant name
+			base_name = self.domain.split(".")[0]
+			t_name = (
+				f"{base_name}.onmicrosoft.com" if i == 0
+				else f"{base_name}{i + 1}.onmicrosoft.com"
+			)
+			org_type = "parent" if i == 0 else "subsidiary"
+			posture = rng_tenant.choices(
+				list(posture_dist.keys()),
+				weights=list(posture_dist.values()),
+				k=1
+			)[0]
+	
+			# Store metadata before creating tenant node
+			# (az_create_tenant reads TENANT_METADATA for plane/orgType/posture)
+			tenant_id_preview = str(uuid.uuid5(
+				uuid.UUID(int=0), f"tenant:{t_name}"
+			)).upper()
+	
+			TENANT_METADATA[tenant_id_preview] = {
+				"orgType": org_type,
+				"posture": posture,
+			}
+	
+			tenant_id = az_create_tenant(t_name)
+			tenants.append({
+				"id":   tenant_id,
+				"name": t_name,
+			})
+	
+			TENANT_METADATA[tenant_id] = {
+				"orgType": org_type,
+				"posture": posture,
+			}
+	
+			print(f"  Tenant {i+1}: {t_name} [{org_type}] posture={posture}")
+	
+		# --------------------------------------------------------
+		# Phase 3: Sync links — SyncIdentity + bridge infrastructure
+		# --------------------------------------------------------
+		print("\nPhase 3: Creating hybrid seam infrastructure")
+		from adsynth.synthesizer.hybrid_seam import create_sync_links
+	
+		seed_val = self.parameters.get("seed", 1)
+		links = create_sync_links(domains, tenants, self.parameters, seed_val)
+	
+		print(f"  Sync links created: {len(links)}")
+		for lnk in links:
+			mode = lnk["sync_mode"]
+			extras = ""
+			if "pta_server_idx" in lnk:
+				extras += " +PTA"
+			if "adfs_server_idx" in lnk:
+				extras += " +ADFS"
+			print(f"  {lnk['domain_name']} -> {lnk['tenant_id'][:8]}... [{mode}]{extras}")
+	
+		# --------------------------------------------------------
+		# Phase 4: Non-human identities
+		# --------------------------------------------------------
+		print("\nPhase 4: Creating non-human identities")
+		from adsynth.synthesizer.nhi import create_non_humans
+	
+		# Count Entra users per tenant for N_generic formula
+		users_per_tenant = {}
+		for t in tenants:
+			count = sum(
+				1 for n in NODES
+				if n["labels"] and n["labels"][-1] == "AZUser"
+				and n["properties"].get("tenantid") == t["id"]
+			)
+			users_per_tenant[t["id"]] = count if count > 0 else (
+				self.parameters.get("AZUser", {}).get("nUsers", 50)
+			)
+	
+		nhi_result = create_non_humans(
+			domains, tenants, users_per_tenant, self.parameters, seed_val
+		)
+	
+		total_nhi = (
+			sum(len(v) for v in nhi_result["sp_by_tenant"].values())
+			+ sum(len(v) for v in nhi_result["mi_by_tenant"].values())
+			+ sum(len(v) for v in nhi_result["aa_by_domain"].values())
+			+ len(nhi_result["cross_pool"])
+		)
+		print(f"  Total NHI nodes created: {total_nhi}")
+		print(f"  Cross-tenant pool: {len(nhi_result['cross_pool'])}")
+	
+		# --------------------------------------------------------
+		# Phase 5: SYNCED_TO user mappings
+		# --------------------------------------------------------
+		print("\nPhase 5: Creating SYNCED_TO user mappings")
+		from adsynth.synthesizer.hybrid_seam import create_user_synced_to_edges
+	
+		rng_sync = random.Random(seed_val ^ 0xC0FFEE)
+		total_synced = 0
+		for lnk in links:
+			n = create_user_synced_to_edges(
+				lnk["domain_name"],
+				lnk["tenant_id"],
+				self.parameters,
+				rng_sync,
+			)
+			total_synced += n
+		print(f"  SYNCED_TO edges created: {total_synced}")
+	
+		# --------------------------------------------------------
+		# Phase 6: Invariant validation
+		# --------------------------------------------------------
+		print("\nPhase 6: Validating semantic invariants")
+		from adsynth.hybrid_system.invariant_validators import (
+			validate_graph_invariants, print_validation_report
+		)
+		results = validate_graph_invariants()
+		print_validation_report(results)
+	
+		# --------------------------------------------------------
+		# Phase 7: Export
+		# --------------------------------------------------------
+		print("\nPhase 7: Exporting to JSON")
+	
+		num_nodes = len(NODES)
+		num_edges = len(dict_edges)
+		print(f"  Total nodes: {num_nodes}")
+		print(f"  Total edges: {num_edges}")
+	
+		try:
+			print(f"  Graph density: {round(num_edges / (num_nodes * (num_nodes - 1)), 5)}")
+		except:
+			pass
+	
+		for label in NODE_GROUPS:
+			if NODE_GROUPS[label]:
+				print(f"  {label}: {len(NODE_GROUPS[label])}")
+	
+		current_datetime = datetime.now()
+		filename = "hybrid_v2_" + current_datetime.strftime("%Y-%m-%d_%H-%M-%S-%f")[:-3]
+	
+		os.makedirs("generated_datasets", exist_ok=True)
+	
+		with open(f"generated_datasets/{filename}.json", "w") as f:
+			for obj in NODES:
+				obj["type"] = "node"
+				json_str = json.dumps(obj, separators=(",", ":"))
+				f.write(json_str + "\n")
+	
+		with open(f"generated_datasets/{filename}.json", "a") as f:
+			for obj in EDGES:
+				obj["type"] = "relationship"
+				json_str = json.dumps(obj, separators=(",", ":"))
+				f.write(json_str + "\n")
+	
+		self.dbname = filename
+	
+		end_ = timer()
+		print(f"\nHybrid v2 generation complete in {end_ - start_:.2f}s")
+		print(f"Output: generated_datasets/{filename}.json")
+	
 
 	def edge_operation(self, source_idx, target_idx, edge_type, prop_names=None, prop_values=None):
 		"""Helper function to create edges with properties"""

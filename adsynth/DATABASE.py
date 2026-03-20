@@ -18,60 +18,36 @@ def node_operation(label, keys, values, id_lookup, identifier = "objectid", is_d
     NODES_index = -1
     new_node = dict()
 
-    # Multiple nodes have the same name but different type
-    # In the hashed map, name + "_" + label
     if identifier == "name":
         id_lookup += "_" + label
 
-
-    # If name/objectid already exists
-    # Retrieve the index of the specified node in the list NODES
     if id_lookup in DATABASE_ID[identifier]:
         NODES_index = DATABASE_ID[identifier][id_lookup]
     else:
-        # Create interface
         if not is_domain:
             new_node = copy.deepcopy(AD_NODE)
         else:
             new_node = copy.deepcopy(AD_NODE_ADMIN)
 
-        # Get the NODES_index
         NODES_index = len(NODES)
-
-        # Add to the list NODES
         NODES.append(new_node)
-
-        # Add to the dictionary
         DATABASE_ID[identifier][id_lookup] = NODES_index
-
-        # Add to the NODE_GROUPS
         NODE_GROUPS[label].append(NODES_index)
-
-        # Set Neo4J internal id
         NODES[NODES_index]["id"] = str(neo4j_id)
-
-        # Update Neo4J ID
         neo4j_id += 1
 
-
-    # Update the node
     for i in range(len(keys)):
-
-        # Set labels/properties
         if keys[i] == "labels":
             if values[i] not in NODES[NODES_index][keys[i]]:
                 NODES[NODES_index][keys[i]].append(values[i])
         else:
             NODES[NODES_index]["properties"][keys[i]] = values[i]
 
-    # Set attribute 'owned' of all users and computers to False
-    # If an entity is comprommised, mark 'owner' True
     if label == "User" or "Computer":
         NODES[NODES_index]["properties"]["owned"] = False
-        
-    # Update DATABSE_ID, if required
+
     update_DATABASE_ID(label, NODES_index)
-    
+
     return NODES_index
 
 def edge_operation(start_index, end_index, relationship_type, props = [], values = []):
@@ -80,44 +56,25 @@ def edge_operation(start_index, end_index, relationship_type, props = [], values
     new_edge = dict()
 
     if hashed_id_edge not in dict_edges:
-        # Create interface
         new_edge = copy.deepcopy(AD_EDGE)
-
-        # Get EDGES index
         EDGES_index = len(EDGES)
-
-        # Add to the EDGES list
         EDGES.append(new_edge)
-
-        # Add to dictionary
         dict_edges[hashed_id_edge] = EDGES_index
-
-        # Set Neo4J internal id
         EDGES[EDGES_index]["id"] = "r_" + str(EDGES_index)
-
-        # Set label
         EDGES[EDGES_index]["label"] = relationship_type
-    
-        # Set start node
+
         EDGES[EDGES_index]["start"]["id"] = NODES[start_index]["id"]
         EDGES[EDGES_index]["start"]["labels"] = NODES[start_index]["labels"]
-
-        # Set end node
         EDGES[EDGES_index]["end"]["id"] = NODES[end_index]["id"]
         EDGES[EDGES_index]["end"]["labels"] = NODES[end_index]["labels"]
 
-        # Store OUs with GpLink
         if NODES[start_index]["labels"][-1] == "GPO" and NODES[end_index]["labels"][-1] == "OU":
-            GPLINK_OUS.append(end_index)   
-        
-  
+            GPLINK_OUS.append(end_index)
+
     else:
         EDGES_index = dict_edges[hashed_id_edge]
 
-
-    # Update edge
     for i in range(len(props)):
-        # Flatten complex property values to JSON strings for Neo4j compatibility
         if isinstance(values[i], (dict, list)):
             import json
             EDGES[EDGES_index]["properties"][props[i]] = json.dumps(values[i])
@@ -127,27 +84,26 @@ def edge_operation(start_index, end_index, relationship_type, props = [], values
 def get_node_index(id_lookup, identifier):
     if id_lookup in DATABASE_ID[identifier]:
         return DATABASE_ID[identifier][id_lookup]
-    
-    # adding a single entry into warnings filter
+
     warnings.simplefilter('error', UserWarning)
-    # displaying the warning
     warnings.warn(f"Node not exisit: {id_lookup} - {identifier}")
     return -1
 
+
+# ============================================================
+# Core graph storage — unchanged from original
+# ============================================================
 
 NODES = []
 EDGES = []
 
 neo4j_id = 0
 
-# Local DATABASE for NODES, 
-# It will be dumped to a JSON file and import to NEO4J after generating the complete AD graph
 DATABASE_ID = {
     "name": dict(),
     "objectid": dict()
 }
 
-# Local DATABASE for EDGES
 dict_edges = dict()
 
 AD_NODE = {
@@ -173,14 +129,21 @@ AD_EDGE = {
     "end": {}
 }
 
+# ============================================================
+# NODE_GROUPS — extended with hybrid node types
+# ============================================================
+
 NODE_GROUPS = {
+    # --- Original on-prem types ---
     "User": list(),
     "Computer": list(),
-    "GPO": list(), 
+    "GPO": list(),
     "Group": list(),
     "Domain": list(),
     "OU": list(),
     "Container": list(),
+
+    # --- Original Azure types ---
     "AZUser": list(),
     "AZGroup": list(),
     "AZTenant": list(),
@@ -190,42 +153,117 @@ NODE_GROUPS = {
     "AZApp": list(),
     "AZManagementGroup": list(),
     "AZKeyVault": list(),
-    "AZVM": list()
+    "AZVM": list(),
+
+    # --- NEW: Hybrid seam node types (Week 1-3 merge) ---
+    "SyncIdentity": list(),       # Per-link sync principal (paper core contribution)
+    "ConnectorHost": list(),      # Entra Connect Sync server
+    "PTAAgentHost": list(),       # PTA agent server
+    "ADFSServer": list(),         # AD FS server
+
+    # --- NEW: Typed NonHumanIdentity subtypes (Week 3 merge) ---
+    "ManagedIdentity": list(),    # Azure managed identity
+    "AutomationAccount": list(),  # On-prem automation account
 }
 
+# ============================================================
+# Original tracking structures — unchanged
+# ============================================================
+
 GPLINK_OUS = []
-
 GROUP_MEMBERS = dict()
-
-SECURITY_GROUPS = list() # processed names # Tiered
-
-ADMIN_USERS = list() # processed names # Tiered
-
-ENABLED_USERS = list() # processed names # Tiered
-
-DISABLED_USERS = list() # processed names
-
-PAW_TIERS = list() # Tiered
-
-S_TIERS = list() # Tiered
-
-S_TIERS_LOCATIONS = list() # processed names, separated by tiers and locations
-
-WS_TIERS = list() # Tiered
-
-WS_TIERS_LOCATIONS = list() # processed names, separated by tiers and locations
-
-COMPUTERS = list() # All
-
+SECURITY_GROUPS = list()
+ADMIN_USERS = list()
+ENABLED_USERS = list()
+DISABLED_USERS = list()
+PAW_TIERS = list()
+S_TIERS = list()
+S_TIERS_LOCATIONS = list()
+WS_TIERS = list()
+WS_TIERS_LOCATIONS = list()
+COMPUTERS = list()
 ridcount = list()
-
-KERBEROASTABLES = list() # processed names
-
-FOLDERS = list() # processed names, separated by tiers and departments
-
-DISTRIBUTION_GROUPS = list() # processed names,  separated by tiers and departments
-
+KERBEROASTABLES = list()
+FOLDERS = list()
+DISTRIBUTION_GROUPS = list()
 SEC_DIST_GROUPS = list()
+LOCAL_ADMINS = list()
 
-LOCAL_ADMINS = list() # not processed names
+# ============================================================
+# NEW: Hybrid tracking structures (not in original DATABASE.py)
+# ============================================================
 
+# List of (domain_name, tenant_id) tuples representing every sync link
+SYNC_LINKS = []
+
+# Maps (domain_name, tenant_id) -> node_index of SyncIdentity node
+# Key invariant: exactly one entry per sync link
+SYNC_IDENTITY_NODES = {}
+
+# Maps tenant_id -> list of ConnectorHost node indices
+CONNECTOR_HOST_NODES = {}
+
+# Maps tenant_id -> list of PTAAgentHost node indices
+PTA_AGENT_NODES = {}
+
+# Maps tenant_id -> list of ADFSServer node indices
+ADFS_SERVER_NODES = {}
+
+# Maps tenant_id -> hybrid mode string: "PHS" | "PTA" | "ADFS" | "Mixed"
+TENANT_HYBRID_MODE = {}
+
+# Maps domain_name -> list of tenant_ids it syncs to
+DOMAIN_TENANT_MAPPING = {}
+
+# List of all NonHumanIdentity node indices (SyncIdentity, SP, MI, AA)
+NHI_NODE_INDICES = []
+
+# Maps tenant_id -> {"posture": str, "orgType": str}
+TENANT_METADATA = {}
+
+# The run identifier for reproducibility — set at generation start
+RUN_ID = ""
+
+
+# ============================================================
+# reset_DB — extended to clear new structures
+# ============================================================
+
+def reset_DB():
+    NODES.clear()
+    EDGES.clear()
+
+    for item in DATABASE_ID:
+        DATABASE_ID[item].clear()
+
+    dict_edges.clear()
+
+    for item in NODE_GROUPS:
+        NODE_GROUPS[item].clear()
+
+    GPLINK_OUS.clear()
+    GROUP_MEMBERS.clear()
+    SECURITY_GROUPS.clear()
+    ADMIN_USERS.clear()
+    ENABLED_USERS.clear()
+    DISABLED_USERS.clear()
+    PAW_TIERS.clear()
+    S_TIERS.clear()
+    WS_TIERS.clear()
+    COMPUTERS.clear()
+    ridcount.clear()
+    KERBEROASTABLES.clear()
+
+    # NEW: clear hybrid tracking structures
+    SYNC_LINKS.clear()
+    SYNC_IDENTITY_NODES.clear()
+    CONNECTOR_HOST_NODES.clear()
+    PTA_AGENT_NODES.clear()
+    ADFS_SERVER_NODES.clear()
+    TENANT_HYBRID_MODE.clear()
+    DOMAIN_TENANT_MAPPING.clear()
+    NHI_NODE_INDICES.clear()
+    TENANT_METADATA.clear()
+
+    global RUN_ID
+    RUN_ID = ""
